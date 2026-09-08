@@ -1,0 +1,17 @@
+{
+  "name": "rail-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Rail Harness — bootstrap. Rail is the authority of the work; the Harness only executes governed runs against code.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "validate": "node --test test/*.test.mjs"
+  },
+  "exports": {
+    ".": "./src/index.js"
+  }
+}

@@ -1,0 +1,121 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  buildExecutionEnvelope,
+  validateExecutionEnvelope,
+  assertNoSecrets,
+  EXECUTION_KINDS,
+  EXECUTION_ENVELOPE_SCHEMA_VERSION
+} from "../src/contracts/execution-envelope.js";
+
+function implementArgs(overrides = {}) {
+  return {
+    kind: "IMPLEMENT",
+    run: { id: "run_1", branch: "rail/abc-1" },
+    ticket: { item: { code: "ABC-1" }, claimToken: "rag_secret", state: "IN_PROGRESS" },
+    workspace: { path: "/home/x/.rail-harness/worktrees/p/abc-1" },
+    session: { id: "11111111-1111-4111-8111-111111111111" },
+    ...overrides
+  };
+}
+
+test("EXECUTION_KINDS is the fixed set", () => {
+  assert.deepEqual(EXECUTION_KINDS, ["IMPLEMENT", "RECOVERY"]);
+});
+
+test("builds a frozen IMPLEMENT envelope with secrets stripped from the ticket", () => {
+  const env = buildExecutionEnvelope(implementArgs());
+  assert.equal(env.schemaVersion, EXECUTION_ENVELOPE_SCHEMA_VERSION);
+  assert.equal(env.kind, "IMPLEMENT");
+  assert.equal(env.run.branch, "rail/abc-1");
+  assert.equal(env.continuation, null);
+  assert.equal(env.resumeAnswer, null);
+  assert.equal(env.ticket.claimToken, undefined);
+  assert.equal(env.ticket.item.code, "ABC-1");
+  assert.ok(Object.isFrozen(env));
+  assert.ok(Object.isFrozen(env.run));
+  assert.ok(Object.isFrozen(env.workspace));
+});
+
+test("missing run.branch is rejected", () => {
+  assert.throws(
+    () => buildExecutionEnvelope(implementArgs({ run: { id: "r" } })),
+    /run\.branch is required/
+  );
+});
+
+test("missing workspace.path is rejected", () => {
+  assert.throws(
+    () => buildExecutionEnvelope(implementArgs({ workspace: {} })),
+    /workspace\.path is required/
+  );
+});
+
+test("bad kind is rejected", () => {
+  assert.throws(() => buildExecutionEnvelope(implementArgs({ kind: "X" })), /kind must be one of/);
+});
+
+test("IMPLEMENT with a continuation is rejected", () => {
+  assert.throws(
+    () => buildExecutionEnvelope(implementArgs({ continuation: { pendingFeedback: [] } })),
+    /must not carry a continuation/
+  );
+});
+
+test("RECOVERY without a continuation is rejected", () => {
+  assert.throws(
+    () => buildExecutionEnvelope(implementArgs({ kind: "RECOVERY" })),
+    /require a continuation/
+  );
+});
+
+test("RECOVERY envelope freezes the continuation and its arrays", () => {
+  const env = buildExecutionEnvelope(
+    implementArgs({
+      kind: "RECOVERY",
+      continuation: {
+        failedReviewNote: "AC-02 failed",
+        pendingFeedback: ["AC-02", "RBAC"],
+        changedFiles: ["app/x.php"]
+      }
+    })
+  );
+  assert.equal(env.kind, "RECOVERY");
+  assert.deepEqual(env.continuation.pendingFeedback, ["AC-02", "RBAC"]);
+  assert.equal(env.continuation.priorImplementationNote, null);
+  assert.ok(Object.isFrozen(env.continuation));
+  assert.ok(Object.isFrozen(env.continuation.pendingFeedback));
+});
+
+test("resumeAnswer must be a string or null", () => {
+  assert.throws(
+    () => buildExecutionEnvelope(implementArgs({ resumeAnswer: 42 })),
+    /resumeAnswer must be a string or null/
+  );
+  const env = buildExecutionEnvelope(implementArgs({ resumeAnswer: "use postgres" }));
+  assert.equal(env.resumeAnswer, "use postgres");
+});
+
+test("assertNoSecrets throws if a secret key is smuggled in", () => {
+  assert.throws(
+    () => assertNoSecrets({ run: { id: "r", claimToken: "x" } }),
+    /must not contain secrets/
+  );
+});
+
+test("a ticket whose non-secret content mentions a token string still builds (only keys are stripped)", () => {
+  const env = buildExecutionEnvelope(
+    implementArgs({ ticket: { description: "the word token appears here", id: "T" } })
+  );
+  assert.equal(env.ticket.description, "the word token appears here");
+});
+
+test("validateExecutionEnvelope agrees with buildExecutionEnvelope", () => {
+  const env = buildExecutionEnvelope(implementArgs());
+  const { valid, errors } = validateExecutionEnvelope(env);
+  assert.ok(valid, JSON.stringify(errors));
+
+  const bad = validateExecutionEnvelope({ ...env, kind: "NOPE" });
+  assert.ok(!bad.valid);
+});
