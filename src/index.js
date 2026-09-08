@@ -53,3 +53,12 @@ export {
   flagPresent,
   missingClaudeFlags
 } from "./adapters/claude-preflight.js";
+
+export {
+  HUMAN_LANGUAGE,
+  PROTOCOL_TERMS,
+  LANGUAGE_INSTRUCTION,
+  LANGUAGE_POLICY_VERSION,
+  buildLanguagePolicy,
+  validateLanguagePolicy
+} from "./i18n/language-policy.js";

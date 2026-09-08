@@ -54,7 +54,15 @@ Input: a validated **`ExecutionEnvelope`** (`src/contracts/execution-envelope.js
     "changedFiles": [ "…" ],
     "feedbackSource": "…" | null
   },
-  "resumeAnswer": null | "human answer that unblocks a prior BLOCKED run"
+  "resumeAnswer": null | "human answer that unblocks a prior BLOCKED run",
+  "languagePolicy": {
+    "version": "0.1",
+    "humanLanguage": "es",
+    "instruction": "IDIOMA: toda comunicación humana debe ser en español. …",
+    "doNotTranslate": [ "READY", "CLAIMED", "IN_PROGRESS", "BLOCKED",
+                        "SUCCESS", "FAILED", "CODE_REVIEW",
+                        "AUTOMATED_TESTS", "ACCEPTANCE_CRITERIA" ]
+  }
 }
 ```
 
@@ -65,6 +73,18 @@ Rules the envelope guarantees:
   `null`.
 - `run.branch` is mandatory; the adapter must confirm the worktree is on it
   and must never change branch.
+- `languagePolicy` is always present (`src/i18n/language-policy.js`).
+
+### Language — the adapter MUST
+
+- Render `envelope.languagePolicy.instruction` verbatim into the runtime
+  prompt, before the task body.
+- Produce every human-facing part of the `ExecutionResult` — `summary`,
+  `question`, `context`, `impact`, and any explanation — **in Spanish**.
+- Leave every machine-readable value untranslated: `outcome`
+  (`IMPLEMENTED` / `BLOCKED` / `RELEASE` / `FAILED`), any `WorkCycle` / `Run`
+  state, check type, or Rail protocol field name — and everything in
+  `languagePolicy.doNotTranslate`.
 
 Output: `{ sessionId, result }` where `result` is a valid **`ExecutionResult`**.
 
@@ -95,6 +115,9 @@ return (JSON, `additionalProperties: false`, every field required):
 `parseExecutionResult(stdout)` accepts either a bare result object or a
 wrapper exposing `structured_output` / `structuredOutput` / `result`, then
 validates it.
+
+`summary`, `question`, `context` and `impact` are human-facing → **Spanish**.
+`outcome` is a fixed enum → never translated.
 
 ## Execution environment
 

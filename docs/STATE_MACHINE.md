@@ -8,6 +8,10 @@ action is safe before asking Rail to perform it.
 Derived from the approved reference (`~/rail-runner/harness`:
 `scripts/harness.mjs`, `RECOVERY.md`).
 
+> **Language:** every state / `Run` state / `outcome` / check type on this
+> page is a machine-readable protocol value and is **never** translated, even
+> in Spanish-language logs or prompts (see `docs/HARNESS.md`).
+
 ## WorkCycle states
 
 ```

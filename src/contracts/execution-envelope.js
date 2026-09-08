@@ -12,9 +12,19 @@
  * `ticket` is passed through `stripSecretKeys` before it goes in, and there
  * is no field for a token, claimToken, or API URL. Adapters work on code,
  * not on Rail.
+ *
+ * Every envelope also carries `languagePolicy` (see `src/i18n/language-policy.js`
+ * and docs/HARNESS.md): the instruction that all human communication the
+ * runtime produces must be in Spanish, while machine-readable protocol values
+ * stay untranslated. This is additive and non-breaking — callers never pass
+ * it; `buildExecutionEnvelope` always injects it.
  */
 
 import { stripSecretKeys, SECRET_KEY_RE } from "../security/sanitize.js";
+import {
+  buildLanguagePolicy,
+  validateLanguagePolicy
+} from "../i18n/language-policy.js";
 
 export const EXECUTION_ENVELOPE_SCHEMA_VERSION = "0.1";
 
@@ -94,7 +104,10 @@ export function buildExecutionEnvelope({
     workspace: Object.freeze({ path: workspace.path }),
     session: Object.freeze({ id: session.id }),
     continuation: frozenContinuation(continuation),
-    resumeAnswer
+    resumeAnswer,
+    // Toda comunicación humana del runtime va en español; lo machine-readable
+    // no se traduce. Se inyecta siempre — no es un parámetro del caller.
+    languagePolicy: buildLanguagePolicy()
   };
 
   assertNoSecrets(envelope);
@@ -136,6 +149,8 @@ export function validateExecutionEnvelope(value) {
     if (value.kind === "IMPLEMENT" && value.continuation != null) {
       errors.push("IMPLEMENT must not carry continuation");
     }
+    const lang = validateLanguagePolicy(value.languagePolicy);
+    if (!lang.valid) errors.push(...lang.errors);
     assertNoSecrets(value);
   } catch (err) {
     errors.push(err.message);

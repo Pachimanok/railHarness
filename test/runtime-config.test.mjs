@@ -99,13 +99,22 @@ test("resolveMode is pure and independent", () => {
   assert.throws(() => resolveMode({ ticketRef: "x", recoverRef: "y" }), /mutually exclusive/);
 });
 
-test("describeConfig never leaks the token", () => {
+test("describeConfig never leaks the token and is in Spanish", () => {
   const env = baseEnv();
   const cfg = loadRuntimeConfig(env, { machineFallback: "h" });
   const text = describeConfig(cfg);
   assert.ok(!text.includes(env.RAIL_TOKEN));
-  assert.ok(text.includes("token:      present (<redacted>)"));
+  assert.ok(text.includes("token:      presente (<redacted>)"));
+  // mode value is an enum → not translated
   assert.ok(text.includes("mode:       discovery"));
+  assert.ok(!/\bpresent\b/.test(text), "English 'present' must not appear");
+});
+
+test("describeConfig renders unset optionals with Spanish placeholders", () => {
+  const cfg = loadRuntimeConfig(baseEnv(), { machineFallback: "h" });
+  const text = describeConfig(cfg);
+  assert.ok(text.includes("ticketRef:  (ninguno)"));
+  assert.ok(text.includes("baseBranch: (autodetección)"));
 });
 
 test("whitespace-only optional vars are treated as unset", () => {

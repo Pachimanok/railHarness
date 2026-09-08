@@ -8,6 +8,7 @@ import {
   EXECUTION_KINDS,
   EXECUTION_ENVELOPE_SCHEMA_VERSION
 } from "../src/contracts/execution-envelope.js";
+import { LANGUAGE_INSTRUCTION } from "../src/i18n/language-policy.js";
 
 function implementArgs(overrides = {}) {
   return {
@@ -118,4 +119,63 @@ test("validateExecutionEnvelope agrees with buildExecutionEnvelope", () => {
 
   const bad = validateExecutionEnvelope({ ...env, kind: "NOPE" });
   assert.ok(!bad.valid);
+});
+
+// ─── Política de idioma en el envelope (requisito del ticket) ─────────────
+
+test("every IMPLEMENT envelope carries the Spanish language instruction", () => {
+  const env = buildExecutionEnvelope(implementArgs());
+  assert.ok(env.languagePolicy, "languagePolicy must be present");
+  assert.equal(env.languagePolicy.humanLanguage, "es");
+  assert.equal(env.languagePolicy.instruction, LANGUAGE_INSTRUCTION);
+  assert.match(env.languagePolicy.instruction, /español/i);
+  assert.ok(Object.isFrozen(env.languagePolicy));
+});
+
+test("every RECOVERY envelope also carries the language instruction", () => {
+  const env = buildExecutionEnvelope(
+    implementArgs({ kind: "RECOVERY", continuation: { pendingFeedback: ["AC-02"] } })
+  );
+  assert.equal(env.languagePolicy.humanLanguage, "es");
+  assert.match(env.languagePolicy.instruction, /NO traduzcas/i);
+});
+
+test("the language instruction survives serialization to a runtime (reaches the wire)", () => {
+  const env = buildExecutionEnvelope(implementArgs());
+  const onWire = JSON.parse(JSON.stringify(env));
+  assert.equal(onWire.languagePolicy.instruction, LANGUAGE_INSTRUCTION);
+  assert.match(onWire.languagePolicy.instruction, /español/i);
+});
+
+test("languagePolicy.doNotTranslate carries the machine-readable values verbatim", () => {
+  const env = buildExecutionEnvelope(implementArgs());
+  for (const term of [
+    "READY",
+    "CLAIMED",
+    "IN_PROGRESS",
+    "BLOCKED",
+    "SUCCESS",
+    "FAILED",
+    "CODE_REVIEW",
+    "AUTOMATED_TESTS",
+    "ACCEPTANCE_CRITERIA"
+  ]) {
+    assert.ok(
+      env.languagePolicy.doNotTranslate.includes(term),
+      `doNotTranslate should include ${term}`
+    );
+  }
+});
+
+test("validateExecutionEnvelope rejects an envelope with a missing/wrong language policy", () => {
+  const env = buildExecutionEnvelope(implementArgs());
+
+  assert.ok(!validateExecutionEnvelope({ ...env, languagePolicy: undefined }).valid);
+
+  const wrongLang = validateExecutionEnvelope({
+    ...env,
+    languagePolicy: { ...env.languagePolicy, humanLanguage: "en" }
+  });
+  assert.ok(!wrongLang.valid);
+  assert.ok(wrongLang.errors.some(e => /humanLanguage/.test(e)));
 });

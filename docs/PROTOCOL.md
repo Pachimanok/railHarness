@@ -6,6 +6,11 @@ The Rail ⇄ Harness wire protocol, as implemented by
 states and gates**; this document describes only what the Harness sends and
 expects.
 
+> **Language:** endpoint paths, header names, JSON field names, state names
+> and enum values in this document are wire values — never translated (see
+> `docs/HARNESS.md`). Free-text the Harness authors (`reason`, `note`,
+> `comment`, Agent Query `question` / `context` / `impact`) is in Spanish.
+
 ## Transport
 
 - HTTPS JSON. `RAIL_API_URL` is the base (e.g. `https://<host>/api/rail`).

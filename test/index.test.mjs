@@ -33,7 +33,13 @@ const EXPECTED_EXPORTS = [
   "SECRET_KEY_RE",
   "REQUIRED_CLAUDE_FLAGS",
   "flagPresent",
-  "missingClaudeFlags"
+  "missingClaudeFlags",
+  "HUMAN_LANGUAGE",
+  "PROTOCOL_TERMS",
+  "LANGUAGE_INSTRUCTION",
+  "LANGUAGE_POLICY_VERSION",
+  "buildLanguagePolicy",
+  "validateLanguagePolicy"
 ];
 
 test("src/index.js exposes the whole bootstrap surface", () => {

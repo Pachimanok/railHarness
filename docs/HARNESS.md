@@ -17,11 +17,45 @@ gates. If Rail does not expose an operation the Harness needs, the Harness
 identifies the limitation and aborts **without improvising a direct
 mutation**.
 
+## Política global de idioma
+
+**Toda comunicación humana del Rail Harness es en español.** Lo
+machine-readable no se traduce nunca.
+
+Fuente de verdad en código: `src/i18n/language-policy.js`
+(`LANGUAGE_INSTRUCTION`, `PROTOCOL_TERMS`, `buildLanguagePolicy()`).
+
+### En español
+
+- Todo prompt / `ExecutionEnvelope` que se envía a un runtime lleva la
+  instrucción de responder en español (`envelope.languagePolicy`). El adapter
+  la renderiza en el prompt (`docs/ADAPTER_CONTRACT.md`).
+- Lo que produce un adapter para humanos: `question`, `context`, `impact`,
+  `summary` y cualquier explicación.
+- Los logs human-facing del Worker Core y de la Orchestration, y
+  `describeConfig()`.
+- El contenido de las Agent Queries y los `reason` / `note` que el Harness
+  redacta.
+
+### Sin traducir (machine-readable)
+
+Enums, estados del `WorkCycle` y del `Run`, `outcome`s, tipos de check y
+nombres de campos del protocolo Rail se dejan **exactamente** como están —
+p. ej.: `READY`, `CLAIMED`, `IN_PROGRESS`, `BLOCKED`, `SUCCESS`, `FAILED`,
+`CODE_REVIEW`, `AUTOMATED_TESTS`, `ACCEPTANCE_CRITERIA`. Tampoco se traducen
+identificadores de código/configuración ni las claves JSON de los contratos.
+
+> Los documentos de `docs/` y los comentarios de código se mantienen en
+> inglés por convención de repositorio; esta política aplica a la
+> comunicación operativa (prompts, logs, salidas del runtime, mensajes a
+> personas), no a la documentación técnica.
+
 ## Components
 
 | Component | Status | Responsibility |
 |---|---|---|
-| **Runtime config** (`src/config/runtime-config.js`) | bootstrapped | Read + validate the environment once; produce a frozen, secret-free config. |
+| **Runtime config** (`src/config/runtime-config.js`) | bootstrapped | Read + validate the environment once; produce a frozen, secret-free config. `describeConfig()` output is Spanish. |
+| **Language policy** (`src/i18n/language-policy.js`) | bootstrapped | Single source of the Spanish-communication instruction; injected into every `ExecutionEnvelope`. |
 | **RailApiClient** (`src/rail/rail-api-client.js`) | bootstrapped | Speak the Rail protocol (`docs/PROTOCOL.md`). Read-only vs governed-mutating calls. Normalizes the Run handoff. |
 | **Contracts** (`src/contracts/`) | bootstrapped | `ExecutionEnvelope` (input to an adapter) and `ExecutionResult` (output from an adapter). |
 | **Secret sanitization** (`src/security/sanitize.js`) | bootstrapped | Strip secret keys from tickets, redact log strings, build a safe child environment. |

@@ -118,23 +118,26 @@ export function loadRuntimeConfig(env = process.env, { machineFallback = null } 
 }
 
 /**
- * Human-readable, secret-free view of a config for logging / preflight
- * output. The token is reported only as present/absent and never printed;
- * every field is additionally run through `redactSecrets` as defense in
- * depth.
+ * Vista human-facing de la config, sin secretos, para logs / preflight. En
+ * español (política de idioma — docs/HARNESS.md). El token sólo se reporta
+ * como presente/ausente y nunca se imprime; además todo el texto pasa por
+ * `redactSecrets` como defensa en profundidad.
+ *
+ * Las etiquetas (`apiUrl`, `mode`, …) son identificadores de configuración y
+ * el valor de `mode` es un enum: no se traducen.
  */
 export function describeConfig(config) {
   const lines = [
     `apiUrl:     ${config.rail.apiUrl}`,
     `projectId:  ${config.rail.projectId}`,
-    `token:      ${config.rail.token ? "present (<redacted>)" : "MISSING"}`,
+    `token:      ${config.rail.token ? "presente (<redacted>)" : "FALTANTE"}`,
     `repoPath:   ${config.repoPath}`,
     `machine:    ${config.machine}`,
     `agent:      ${config.agent}`,
     `mode:       ${config.mode}`,
-    `ticketRef:  ${config.ticketRef ?? "(none)"}`,
-    `recoverRef: ${config.recoverRef ?? "(none)"}`,
-    `baseBranch: ${config.baseBranch ?? "(auto-detect)"}`
+    `ticketRef:  ${config.ticketRef ?? "(ninguno)"}`,
+    `recoverRef: ${config.recoverRef ?? "(ninguno)"}`,
+    `baseBranch: ${config.baseBranch ?? "(autodetección)"}`
   ];
 
   return redactSecrets(lines.join("\n"), [config.rail.token]);
