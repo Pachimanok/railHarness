@@ -8,10 +8,11 @@ governed execution against a code repository.
 > the documented protocol. It never decides what is "done", never invents
 > scope, and never mutates work state on its own judgement.
 
-## Status: bootstrap ticket
+## Status
 
-This repository currently contains only the **base** the follow-up tickets
-build on. It does **not** run an autonomous worker yet.
+The **base** plus the **Worker Core** — the persistent process that consumes
+Rail's `READY` queue. It still runs a *placeholder* execution: no real
+workspace, no real adapter, no `WorkCycle` orchestration yet.
 
 | Delivered here | Later ticket |
 |---|---|
@@ -21,7 +22,8 @@ build on. It does **not** run an autonomous worker yet.
 | `src/contracts/` — `ExecutionEnvelope` / `ExecutionResult` | consumed by AdapterRouter |
 | `src/security/` — secret sanitization | used everywhere |
 | `src/adapters/claude-preflight.js` — pure flag checks | AdapterRouter completes it |
-| — | **Worker Core**, **Workspace Manager**, **AdapterRouter**, **Orchestration** |
+| `src/worker/` — **Worker Core**: discovery, preflight, atomic claim, heartbeat, fencing, controlled shutdown (`docs/WORKER_CORE.md`) | Orchestration wires the real execution |
+| — | **Workspace Manager**, **AdapterRouter**, **Orchestration**, resume/recovery |
 
 ## Documentation
 
@@ -29,6 +31,19 @@ build on. It does **not** run an autonomous worker yet.
 - [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — the Rail ⇄ Harness wire protocol.
 - [`docs/STATE_MACHINE.md`](docs/STATE_MACHINE.md) — `WorkCycle` / `Run` states, lease rule, recovery targets.
 - [`docs/ADAPTER_CONTRACT.md`](docs/ADAPTER_CONTRACT.md) — the interface every coding adapter must satisfy.
+- [`docs/WORKER_CORE.md`](docs/WORKER_CORE.md) — the persistent worker: discovery, claim, heartbeat, fencing, shutdown.
+
+## Running the Worker Core
+
+```bash
+npm run worker   # node src/worker/cli.js
+```
+
+Reads `.env` (see Configuration). Polls the `READY` queue for the configured
+project, claims one ticket at a time, holds the Run with a heartbeat, and
+tears down cleanly on `SIGINT` / `SIGTERM`. Optional cadence overrides:
+`RAIL_HEARTBEAT_INTERVAL_MS` (default `300000`), `RAIL_DISCOVERY_POLL_MS`
+(default `30000`). The token and any per-Run `claimToken` are never printed.
 
 ## Configuration
 
@@ -55,7 +70,10 @@ import {
   loadRuntimeConfig, describeConfig,
   RailApiClient, normalizeRunHandoff,
   buildExecutionEnvelope, parseExecutionResult, EXECUTION_OUTCOMES,
-  stripSecretKeys, redactSecrets, safeEnvironment
+  stripSecretKeys, redactSecrets, safeEnvironment,
+  createWorkerCore, WORKER_PHASES,
+  assertTicketClaimable, isTicketClaimable, pickDiscoveryRef,
+  createPlaceholderExecution
 } from "rail-harness"; // ./src/index.js
 ```
 

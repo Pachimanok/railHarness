@@ -27,7 +27,10 @@ export const OPTIONAL_ENV = Object.freeze([
   "RAIL_TICKET_REF",
   "RAIL_RECOVER_REF",
   "RAIL_BASE_BRANCH",
-  "RAIL_RECOVER_NOTES"
+  "RAIL_RECOVER_NOTES",
+  // Worker Core (src/worker/cli.js) — polling / heartbeat cadence.
+  "RAIL_HEARTBEAT_INTERVAL_MS",
+  "RAIL_DISCOVERY_POLL_MS"
 ]);
 
 export const HARNESS_MODES = Object.freeze({

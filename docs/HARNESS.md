@@ -60,20 +60,25 @@ identificadores de código/configuración ni las claves JSON de los contratos.
 | **Contracts** (`src/contracts/`) | bootstrapped | `ExecutionEnvelope` (input to an adapter) and `ExecutionResult` (output from an adapter). |
 | **Secret sanitization** (`src/security/sanitize.js`) | bootstrapped | Strip secret keys from tickets, redact log strings, build a safe child environment. |
 | **Adapter preflight** (`src/adapters/claude-preflight.js`) | partial | Pure CLI-flag detection helpers. Executable preflight + runner come later. |
-| **Worker Core** | later ticket | Owns one Run: claim → heartbeat → drive adapter → finish. |
+| **Worker Core** (`src/worker/`, `npm run worker`) | bootstrapped | Persistent process. Owns one Run at a time: validate Rail → discover `READY` → preflight → atomic claim → heartbeat supervisor + one supervised execution → fencing / controlled shutdown. Drives an injected execution collaborator (placeholder for now). Keeps `claimToken` inside the Core. Human logs Spanish. See `docs/WORKER_CORE.md`. |
 | **Workspace Manager** | later ticket | Create/reuse the isolated git worktree + branch; fill `ExecutionEnvelope.workspace.path`. |
 | **AdapterRouter** | later ticket | Route an `ExecutionEnvelope` to the right adapter (claude-code, codex, …); return an `ExecutionResult`. |
 | **Orchestration** | later ticket | Drive the `WorkCycle` state machine end to end (`docs/STATE_MACHINE.md`), including recovery. |
 
 ## What this bootstrap deliberately does NOT do
 
-- No autonomous worker loop (no `claim` → `finish` control flow).
-- No git worktree creation / branch management.
-- No adapter process spawning.
-- No AdapterRouter, no Orchestration.
+- No git worktree creation / branch management (Workspace Manager — later).
+- No adapter process spawning; the Worker Core runs a **placeholder**
+  execution that touches nothing (AdapterRouter — later).
+- No `WorkCycle` state transitions, no checks / queries, no
+  Implementer/Reviewer/Tester orchestration (Orchestration — later).
+- No full resume / recovery of an orphaned `IN_PROGRESS` cycle.
 
-Those are the next tickets. This bootstrap gives them a stable, tested surface
-to build on: `src/index.js` is the single import point.
+The Worker Core (`src/worker/`) **is** delivered: it runs the autonomous
+`validate → discover → preflight → claim → heartbeat → fence/shutdown` loop
+against an injected execution collaborator (`docs/WORKER_CORE.md`). The
+remaining pieces plug into that loop. `src/index.js` is the single import
+point.
 
 ## Authority sources
 

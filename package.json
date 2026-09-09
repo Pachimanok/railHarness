@@ -9,7 +9,8 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "validate": "node --test test/*.test.mjs"
+    "validate": "node --test test/*.test.mjs",
+    "worker": "node src/worker/cli.js"
   },
   "exports": {
     ".": "./src/index.js"

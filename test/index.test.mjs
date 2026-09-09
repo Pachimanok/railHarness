@@ -39,7 +39,17 @@ const EXPECTED_EXPORTS = [
   "LANGUAGE_INSTRUCTION",
   "LANGUAGE_POLICY_VERSION",
   "buildLanguagePolicy",
-  "validateLanguagePolicy"
+  "validateLanguagePolicy",
+  "createWorkerCore",
+  "defaultBranchFor",
+  "WORKER_PHASES",
+  "DEFAULT_HEARTBEAT_INTERVAL_MS",
+  "DEFAULT_DISCOVERY_POLL_MS",
+  "DEFAULT_DISCOVERY_LIMIT",
+  "assertTicketClaimable",
+  "isTicketClaimable",
+  "pickDiscoveryRef",
+  "createPlaceholderExecution"
 ];
 
 test("src/index.js exposes the whole bootstrap surface", () => {
