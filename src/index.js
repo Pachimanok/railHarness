@@ -84,3 +84,15 @@ export {
 } from "./worker/ticket-preflight.js";
 
 export { createPlaceholderExecution } from "./worker/placeholder-execution.js";
+
+export {
+  prepareWorkspace,
+  cleanupWorkspace,
+  createWorkspaceExecution,
+  workspacePathFor,
+  assertInsideRoot,
+  normalizeRepoSlug,
+  resolveTargetRepo,
+  assertWorkspaceCleanOfSecrets,
+  WORKSPACE_ERROR_CODES
+} from "./workspace/workspace-manager.js";

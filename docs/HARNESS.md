@@ -61,13 +61,12 @@ identificadores de código/configuración ni las claves JSON de los contratos.
 | **Secret sanitization** (`src/security/sanitize.js`) | bootstrapped | Strip secret keys from tickets, redact log strings, build a safe child environment. |
 | **Adapter preflight** (`src/adapters/claude-preflight.js`) | partial | Pure CLI-flag detection helpers. Executable preflight + runner come later. |
 | **Worker Core** (`src/worker/`, `npm run worker`) | bootstrapped | Persistent process. Owns one Run at a time: validate Rail → discover `READY` → preflight → atomic claim → heartbeat supervisor + one supervised execution → fencing / controlled shutdown. Drives an injected execution collaborator (placeholder for now). Keeps `claimToken` inside the Core. Human logs Spanish. See `docs/WORKER_CORE.md`. |
-| **Workspace Manager** | later ticket | Create/reuse the isolated git worktree + branch; fill `ExecutionEnvelope.workspace.path`. |
+| **Workspace Manager** (`src/workspace/workspace-manager.js`) | bootstrapped | Create/reuse an isolated `git worktree` + ticket branch under `RAIL_WORKSPACE_ROOT`, validating the ticket's `targetRepository` against the primary clone's `origin`. Runs only after a valid claim; never sees a `claimToken`; never writes a credential into the tree. Returns the workspace path. Injectable as the Worker Core's `createExecution`. See `docs/WORKSPACE_MANAGER.md`. |
 | **AdapterRouter** | later ticket | Route an `ExecutionEnvelope` to the right adapter (claude-code, codex, …); return an `ExecutionResult`. |
 | **Orchestration** | later ticket | Drive the `WorkCycle` state machine end to end (`docs/STATE_MACHINE.md`), including recovery. |
 
 ## What this bootstrap deliberately does NOT do
 
-- No git worktree creation / branch management (Workspace Manager — later).
 - No adapter process spawning; the Worker Core runs a **placeholder**
   execution that touches nothing (AdapterRouter — later).
 - No `WorkCycle` state transitions, no checks / queries, no

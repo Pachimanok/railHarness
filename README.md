@@ -23,7 +23,8 @@ workspace, no real adapter, no `WorkCycle` orchestration yet.
 | `src/security/` — secret sanitization | used everywhere |
 | `src/adapters/claude-preflight.js` — pure flag checks | AdapterRouter completes it |
 | `src/worker/` — **Worker Core**: discovery, preflight, atomic claim, heartbeat, fencing, controlled shutdown (`docs/WORKER_CORE.md`) | Orchestration wires the real execution |
-| — | **Workspace Manager**, **AdapterRouter**, **Orchestration**, resume/recovery |
+| `src/workspace/` — **Workspace Manager**: isolated `git worktree` + ticket branch under `RAIL_WORKSPACE_ROOT`, `targetRepository` ⇄ `origin` validation (`docs/WORKSPACE_MANAGER.md`) | AdapterRouter runs inside the prepared workspace |
+| — | **AdapterRouter**, **Orchestration**, resume/recovery |
 
 ## Documentation
 
@@ -32,6 +33,7 @@ workspace, no real adapter, no `WorkCycle` orchestration yet.
 - [`docs/STATE_MACHINE.md`](docs/STATE_MACHINE.md) — `WorkCycle` / `Run` states, lease rule, recovery targets.
 - [`docs/ADAPTER_CONTRACT.md`](docs/ADAPTER_CONTRACT.md) — the interface every coding adapter must satisfy.
 - [`docs/WORKER_CORE.md`](docs/WORKER_CORE.md) — the persistent worker: discovery, claim, heartbeat, fencing, shutdown.
+- [`docs/WORKSPACE_MANAGER.md`](docs/WORKSPACE_MANAGER.md) — isolated `git worktree` + ticket branch, repo validation, safe reuse/cleanup.
 
 ## Running the Worker Core
 

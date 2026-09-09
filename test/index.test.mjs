@@ -49,7 +49,16 @@ const EXPECTED_EXPORTS = [
   "assertTicketClaimable",
   "isTicketClaimable",
   "pickDiscoveryRef",
-  "createPlaceholderExecution"
+  "createPlaceholderExecution",
+  "prepareWorkspace",
+  "cleanupWorkspace",
+  "createWorkspaceExecution",
+  "workspacePathFor",
+  "assertInsideRoot",
+  "normalizeRepoSlug",
+  "resolveTargetRepo",
+  "assertWorkspaceCleanOfSecrets",
+  "WORKSPACE_ERROR_CODES"
 ];
 
 test("src/index.js exposes the whole bootstrap surface", () => {

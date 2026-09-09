@@ -30,7 +30,10 @@ export const OPTIONAL_ENV = Object.freeze([
   "RAIL_RECOVER_NOTES",
   // Worker Core (src/worker/cli.js) — polling / heartbeat cadence.
   "RAIL_HEARTBEAT_INTERVAL_MS",
-  "RAIL_DISCOVERY_POLL_MS"
+  "RAIL_DISCOVERY_POLL_MS",
+  // Workspace Manager (src/workspace/) — root under which every ticket gets
+  // its own isolated git worktree. Absolute path; no machine-specific default.
+  "RAIL_WORKSPACE_ROOT"
 ]);
 
 export const HARNESS_MODES = Object.freeze({
@@ -106,6 +109,7 @@ export function loadRuntimeConfig(env = process.env, { machineFallback = null } 
       projectId: clean(env.RAIL_PROJECT_ID)
     },
     repoPath: clean(env.RAIL_REPO_PATH),
+    workspaceRoot: clean(env.RAIL_WORKSPACE_ROOT),
     machine: clean(env.RAIL_MACHINE) || machineFallback || "unknown-machine",
     agent: clean(env.RAIL_AGENT) || DEFAULT_AGENT,
     actor: "agent",
@@ -135,6 +139,7 @@ export function describeConfig(config) {
     `projectId:  ${config.rail.projectId}`,
     `token:      ${config.rail.token ? "presente (<redacted>)" : "FALTANTE"}`,
     `repoPath:   ${config.repoPath}`,
+    `workspaceRoot: ${config.workspaceRoot ?? "(sin configurar)"}`,
     `machine:    ${config.machine}`,
     `agent:      ${config.agent}`,
     `mode:       ${config.mode}`,
