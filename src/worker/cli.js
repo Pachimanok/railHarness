@@ -2,9 +2,11 @@
  * `npm run worker` — the persistent Worker Core process.
  *
  * Reads the runtime config, builds a RailApiClient, and drives
- * `createWorkerCore` with the placeholder execution (no real workspace /
- * adapter / orchestration yet — see docs/WORKER_CORE.md). Human-facing output
- * is Spanish; the Rail token and any per-Run claimToken are never printed.
+ * `createWorkerCore`. Between `claim` and `finish` it wires the ORCHESTRATION
+ * execution (RAIL-D-00005): isolated workspace -> IMPLEMENTER -> REVIEWER ->
+ * TESTER, publishing governed checks and requesting governed transitions
+ * (docs/ORCHESTRATION.md). Human-facing output is Spanish; the Rail token and
+ * any per-Run claimToken are never printed.
  *
  * SIGINT / SIGTERM request a controlled stop: the Core stops claiming new
  * work, cancels the active execution if any, releases the Run it owns, and
@@ -16,7 +18,8 @@ import os from "node:os";
 import { loadRuntimeConfig, describeConfig } from "../config/runtime-config.js";
 import { RailApiClient } from "../rail/rail-api-client.js";
 import { createWorkerCore } from "./worker-core.js";
-import { createPlaceholderExecution } from "./placeholder-execution.js";
+import { createAdapterRouter } from "../adapters/adapter-router.js";
+import { createOrchestrationExecution } from "../orchestration/orchestrator.js";
 
 /** Parse an optional positive-integer ms env var, falling back to `fallback`. */
 export function readIntervalEnv(env, name, fallback) {
@@ -51,11 +54,28 @@ export async function runWorkerCli({ env = process.env, logger = line => console
   }
 
   const api = RailApiClient.fromRuntimeConfig(config);
+  const adapterRouter = createAdapterRouter({ provider: config.adapterProvider });
+
+  if (!config.workspaceRoot) {
+    logger(
+      "Aviso: RAIL_WORKSPACE_ROOT no está configurado; la orquestación no podrá preparar " +
+        "un workspace aislado y cada ejecución terminará en FAILED. Configuralo en .env."
+    );
+  }
 
   const worker = createWorkerCore({
     api,
     projectId: config.rail.projectId,
-    createExecution: ctx => createPlaceholderExecution(ctx, { logger }),
+    createExecution: ctx =>
+      createOrchestrationExecution(ctx, {
+        api,
+        adapterRouter,
+        provider: config.adapterProvider,
+        workspaceRoot: config.workspaceRoot,
+        repoPath: config.repoPath,
+        baseBranch: config.baseBranch,
+        logger
+      }),
     heartbeatIntervalMs,
     discoveryPollMs,
     logger

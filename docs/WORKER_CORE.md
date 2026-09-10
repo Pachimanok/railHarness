@@ -10,7 +10,8 @@ reshaped from a one-shot script into a supervised, long-running loop.
 > convention. Every human-facing line the Worker Core *emits at runtime* is in
 > Spanish (docs/HARNESS.md). Machine-readable values — `READY`, `CLAIMED`,
 > `RELEASED`, `FAILED`, `ABANDONED`, the `WORKER_PHASES` identifiers, Rail
-> field names — are never translated.
+> field names — are never translated. RailSoft's `finishRun` outcomes are
+> `COMPLETED`, `FAILED`, `ABANDONED`, `RELEASED` (RailSoft is authoritative).
 
 ## Responsibility
 
@@ -46,14 +47,15 @@ execution.
 
 | Deferred | Ticket |
 |---|---|
-| Real isolated git worktree + branch | Workspace Manager (TMP-003) |
-| Real Claude Code adapter execution | AdapterRouter (TMP-004) |
-| Implementer / Reviewer / Tester orchestration and `WorkCycle` transitions (`CLAIMED → IN_PROGRESS → REVIEWING …`) | Orchestration (TMP-005) |
-| Full resume / recovery of an orphaned `IN_PROGRESS` cycle | TMP-006 |
+| Real isolated git worktree + branch | Workspace Manager (RAIL-D-00003) — done |
+| Real Claude Code adapter execution | AdapterRouter (RAIL-D-00004) — done |
+| Implementer / Reviewer / Tester orchestration and `WorkCycle` transitions (`CLAIMED → IN_PROGRESS → REVIEWING → TESTING → SANDBOX_READY`) | Orchestration (RAIL-D-00005) — done, `docs/ORCHESTRATION.md` |
+| Full resume / recovery of an orphaned `IN_PROGRESS` cycle | later ticket |
 
-The Worker Core therefore **does not** call `POST /transitions`,
-`POST /checks`, `POST /queries`, or `POST /recover`. It only uses:
-`listProjects`, `listReady`, `getTicket` (read-only) and `claim`,
+The Worker Core itself **still does not** call `POST /transitions`,
+`POST /checks`, `POST /queries`, or `POST /recover` — those are the
+Orchestration collaborator's, on the Run the Core already owns. The Core
+uses: `listProjects`, `listReady`, `getTicket` (read-only) and `claim`,
 `heartbeat`, `finishRun` (governed).
 
 ## The execution collaborator
@@ -66,17 +68,24 @@ createExecution({ ref, ticket, branch, run: { id } }) -> { done, cancel }
 
 - The context carries **no `claimToken`** and the `ticket` is passed through
   `stripSecretKeys` first; `assertNoSecretKeys` re-checks it.
-- `done` is a `Promise`. It resolves with an optional `{ outcome, note }`
-  (`outcome: "FAILED"` maps to a `FAILED` Run; anything else → `RELEASED`), or
-  rejects on a technical failure (→ `FAILED` Run).
+- `done` is a `Promise`. It resolves with an optional `{ outcome, note }`; the
+  Core passes a recognized RailSoft outcome (`COMPLETED` / `FAILED` /
+  `ABANDONED` / `RELEASED`) straight through to `finishRun` — the happy path
+  finishes `COMPLETED`, not `RELEASED` — and closes anything unrecognized
+  conservatively as `RELEASED`. A rejected `done` → `FAILED` Run. While the
+  orchestration is blocked on an open Agent Query, `done` stays **pending** and
+  the Core keeps heartbeating — no `finishRun`.
 - `cancel(reason)` must make `done` settle promptly; the Core calls it on
   shutdown and on fencing.
 
-Until Workspace Manager / AdapterRouter / Orchestration land, `npm run worker`
-wires **`createPlaceholderExecution`** (`src/worker/placeholder-execution.js`):
-it touches nothing (no git, no filesystem, no Rail) and simply holds — the
-Core keeps the Run alive by heartbeat — until `cancel()` (SIGINT/SIGTERM or
-fencing).
+As of RAIL-D-00005 `npm run worker` wires **`createOrchestrationExecution`**
+(`src/orchestration/orchestrator.js`): it prepares the isolated workspace and
+runs `IMPLEMENTER → REVIEWER → TESTER` with governed checks / transitions
+(`docs/ORCHESTRATION.md`), then returns `{ outcome, note }`. The `api` /
+`adapterRouter` / workspace config are injected at the CLI, never through the
+execution context. `createPlaceholderExecution`
+(`src/worker/placeholder-execution.js`) — touches nothing, just holds until
+`cancel()` — stays exported for tests and manual dry-runs.
 
 ## Claim preconditions (preflight)
 

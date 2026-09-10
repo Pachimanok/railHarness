@@ -179,3 +179,39 @@ test("validateExecutionEnvelope rejects an envelope with a missing/wrong languag
   assert.ok(!wrongLang.valid);
   assert.ok(wrongLang.errors.some(e => /humanLanguage/.test(e)));
 });
+
+// ─── RAIL-D-00005: role / roleBrief (aditivos, backward-compatible) ───────
+
+test("role por defecto es IMPLEMENTER y el envelope sigue siendo válido", () => {
+  const env = buildExecutionEnvelope(implementArgs());
+  assert.equal(env.role, "IMPLEMENTER");
+  assert.equal(env.roleBrief, null);
+  assert.ok(validateExecutionEnvelope(env).valid);
+});
+
+test("role REVIEWER/TESTER se acepta; un role desconocido se rechaza", () => {
+  for (const role of ["REVIEWER", "TESTER"]) {
+    const env = buildExecutionEnvelope(implementArgs({ role }));
+    assert.equal(env.role, role);
+  }
+  assert.throws(() => buildExecutionEnvelope(implementArgs({ role: "AUDITOR" })), /role must be one of/);
+});
+
+test("roleBrief se congela y se le quitan las claves secretas", () => {
+  const env = buildExecutionEnvelope(
+    implementArgs({
+      role: "REVIEWER",
+      roleBrief: { implementationSummary: "hecho X", token: "rag_secret", nested: { claimToken: "CT" } }
+    })
+  );
+  assert.equal(env.roleBrief.implementationSummary, "hecho X");
+  assert.equal(env.roleBrief.token, undefined);
+  assert.equal(env.roleBrief.nested.claimToken, undefined);
+  assert.ok(Object.isFrozen(env.roleBrief));
+  assert.doesNotThrow(() => assertNoSecrets(env));
+});
+
+test("validateExecutionEnvelope marca un role inválido", () => {
+  const env = buildExecutionEnvelope(implementArgs());
+  assert.ok(!validateExecutionEnvelope({ ...env, role: "NOPE" }).valid);
+});

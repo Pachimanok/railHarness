@@ -1,19 +1,18 @@
 /**
  * Rail Harness — public surface (bootstrap).
  *
- * This barrel is the stable import point the follow-up tickets build against:
- *   - Worker Core         — DELIVERED HERE: discovery, preflight, atomic claim,
- *                           heartbeat supervisor, fencing, controlled shutdown
- *                           (docs/WORKER_CORE.md). Runs against an injected
- *                           execution collaborator.
- *   - Workspace Manager    — fills ExecutionEnvelope.workspace.path
- *   - AdapterRouter        — routes an ExecutionEnvelope to an adapter, gets back
- *                            an ExecutionResult
- *   - Orchestration        — drives the WorkCycle state machine (docs/STATE_MACHINE.md)
+ * This barrel is the stable import point:
+ *   - Worker Core       — discovery, preflight, atomic claim, heartbeat, fencing,
+ *                         controlled shutdown (docs/WORKER_CORE.md).
+ *   - Workspace Manager — isolated git worktree + ticket branch (docs/WORKSPACE_MANAGER.md).
+ *   - AdapterRouter     — provider-independent adapter routing (docs/ADAPTER_ROUTER.md).
+ *   - Orchestration     — IMPLEMENTER → REVIEWER → TESTER, governed checks /
+ *                         transitions / Agent Queries, humanOnly hand-off
+ *                         (docs/ORCHESTRATION.md). Wired into `npm run worker`.
  *
- * The Worker Core owns the Run lease; it does NOT yet create a real workspace,
- * spawn a real adapter, or drive WorkCycle transitions — those stay with the
- * later tickets.
+ * The Worker Core owns the Run lease; Orchestration runs the roles on that Run
+ * and never claims / recovers / heartbeats / finishes it. Full resume /
+ * recovery of an orphaned IN_PROGRESS cycle stays with a later ticket.
  */
 
 export {
@@ -32,6 +31,7 @@ export {
   validateExecutionEnvelope,
   assertNoSecrets,
   EXECUTION_KINDS,
+  EXECUTION_ROLES,
   EXECUTION_ENVELOPE_SCHEMA_VERSION
 } from "./contracts/execution-envelope.js";
 
@@ -64,13 +64,20 @@ export {
   CLAUDE_TOOLS,
   CLAUDE_ALLOWED_TOOLS,
   CLAUDE_DISALLOWED_TOOLS,
+  CLAUDE_REVIEW_TOOLS,
+  CLAUDE_REVIEW_ALLOWED_TOOLS,
+  CLAUDE_TEST_ALLOWED_TOOLS,
+  CLAUDE_REVIEW_DISALLOWED_TOOLS,
   FORBIDDEN_CLAUDE_FLAGS,
   claudeCodeAdapter,
   preflight as preflightClaudeCode,
   run as runClaudeCode,
   createClaudeCodeExecution,
   buildPrompt as buildClaudePrompt,
+  buildReviewPrompt as buildClaudeReviewPrompt,
+  buildTestPrompt as buildClaudeTestPrompt,
   buildClaudeArgs,
+  toolPostureFor,
   isResumingSession
 } from "./adapters/claude-code.js";
 
@@ -105,6 +112,34 @@ export {
 } from "./worker/ticket-preflight.js";
 
 export { createPlaceholderExecution } from "./worker/placeholder-execution.js";
+
+export {
+  createOrchestrator,
+  createOrchestrationExecution,
+  mapOrchestrationOutcome,
+  ORCHESTRATION_OUTCOMES,
+  TRANSITION_PLAN
+} from "./orchestration/orchestrator.js";
+
+export {
+  ROLES,
+  ROLE_LIST,
+  ROLE_DECISIONS,
+  decisionFor,
+  interpretExecutionResult,
+  assertRoleResult,
+  buildRoleEnvelope,
+  defaultRunRole
+} from "./orchestration/roles.js";
+
+export {
+  createRailEffects,
+  assertCheckEvidence,
+  digestEvidence,
+  classifyTransition,
+  isHumanOnlyRejection,
+  ORCHESTRATION_CHECK_TYPES
+} from "./orchestration/rail-effects.js";
 
 export {
   prepareWorkspace,

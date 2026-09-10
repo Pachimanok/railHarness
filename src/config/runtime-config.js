@@ -33,7 +33,10 @@ export const OPTIONAL_ENV = Object.freeze([
   "RAIL_DISCOVERY_POLL_MS",
   // Workspace Manager (src/workspace/) — root under which every ticket gets
   // its own isolated git worktree. Absolute path; no machine-specific default.
-  "RAIL_WORKSPACE_ROOT"
+  "RAIL_WORKSPACE_ROOT",
+  // Orchestration (src/orchestration/) — explicit adapter provider driven
+  // through the AdapterRouter. Default: claude-code.
+  "RAIL_ADAPTER_PROVIDER"
 ]);
 
 export const HARNESS_MODES = Object.freeze({
@@ -110,6 +113,7 @@ export function loadRuntimeConfig(env = process.env, { machineFallback = null } 
     },
     repoPath: clean(env.RAIL_REPO_PATH),
     workspaceRoot: clean(env.RAIL_WORKSPACE_ROOT),
+    adapterProvider: clean(env.RAIL_ADAPTER_PROVIDER) || "claude-code",
     machine: clean(env.RAIL_MACHINE) || machineFallback || "unknown-machine",
     agent: clean(env.RAIL_AGENT) || DEFAULT_AGENT,
     actor: "agent",

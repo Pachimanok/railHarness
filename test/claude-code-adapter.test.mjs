@@ -703,3 +703,128 @@ test("claudeCodeAdapter expone la interfaz del contrato", () => {
   assert.equal(typeof claudeCodeAdapter.run, "function");
   assert.equal(typeof claudeCodeAdapter.createExecution, "function");
 });
+
+// ── 13. RAIL-D-00005: posturas de rol REVIEWER / TESTER (read-only) ────
+
+import {
+  buildReviewPrompt,
+  buildTestPrompt,
+  toolPostureFor,
+  CLAUDE_REVIEW_TOOLS,
+  CLAUDE_REVIEW_ALLOWED_TOOLS,
+  CLAUDE_TEST_ALLOWED_TOOLS,
+  CLAUDE_REVIEW_DISALLOWED_TOOLS
+} from "../src/adapters/claude-code.js";
+
+test("role por defecto IMPLEMENTER: argv sin cambios respecto de RAIL-D-00004", () => {
+  const args = buildClaudeArgs(makeEnvelope());
+  const val = f => args[args.indexOf(f) + 1];
+  assert.equal(val("--tools"), CLAUDE_TOOLS);
+  assert.equal(val("--allowedTools"), CLAUDE_ALLOWED_TOOLS);
+  assert.equal(val("--disallowedTools"), CLAUDE_DISALLOWED_TOOLS);
+});
+
+test("REVIEWER: sin Edit/Write, sólo git de lectura; el prompt es de revisión independiente", () => {
+  const env = makeEnvelope({ role: "REVIEWER", roleBrief: { implementationSummary: "hecho X" } });
+  const args = buildClaudeArgs(env);
+  const val = f => args[args.indexOf(f) + 1];
+  assert.equal(val("--tools"), CLAUDE_REVIEW_TOOLS);
+  assert.ok(!CLAUDE_REVIEW_TOOLS.includes("Edit"));
+  assert.ok(!CLAUDE_REVIEW_TOOLS.includes("Write"));
+  assert.equal(val("--allowedTools"), CLAUDE_REVIEW_ALLOWED_TOOLS);
+  assert.equal(val("--disallowedTools"), CLAUDE_REVIEW_DISALLOWED_TOOLS);
+  assert.ok(CLAUDE_REVIEW_DISALLOWED_TOOLS.includes("Edit"));
+  assert.ok(CLAUDE_REVIEW_DISALLOWED_TOOLS.includes("Write"));
+
+  const prompt = buildReviewPrompt(env);
+  assert.ok(prompt.startsWith(env.languagePolicy.instruction));
+  assert.match(prompt, /REVIEWER independiente/);
+  assert.match(prompt, /NO sos un segundo/i);
+  assert.match(prompt, /SÓLO lectura/);
+});
+
+test("TESTER: read-only + runners de test; prompt distinto del REVIEWER", () => {
+  const env = makeEnvelope({ role: "TESTER", roleBrief: { acceptanceCriteria: [{ id: "T5-AC-01" }] } });
+  const args = buildClaudeArgs(env);
+  const val = f => args[args.indexOf(f) + 1];
+  assert.equal(val("--tools"), CLAUDE_REVIEW_TOOLS);
+  assert.equal(val("--allowedTools"), CLAUDE_TEST_ALLOWED_TOOLS);
+  assert.ok(CLAUDE_TEST_ALLOWED_TOOLS.includes("Bash(npm test *)"));
+  assert.ok(CLAUDE_TEST_ALLOWED_TOOLS.includes("Bash(pytest *)"));
+  assert.equal(val("--disallowedTools"), CLAUDE_REVIEW_DISALLOWED_TOOLS);
+
+  const prompt = buildTestPrompt(env);
+  assert.notEqual(prompt, buildReviewPrompt(env));
+  assert.match(prompt, /TESTER independiente/);
+  assert.match(prompt, /VALID[ÁA]S comportamiento y Acceptance/);
+});
+
+test("toolPostureFor: IMPLEMENTER puede editar; REVIEWER/TESTER no", () => {
+  assert.ok(toolPostureFor("IMPLEMENTER").tools.includes("Write"));
+  assert.ok(!toolPostureFor("REVIEWER").tools.includes("Write"));
+  assert.ok(!toolPostureFor("TESTER").tools.includes("Edit"));
+});
+
+test("REVIEWER/TESTER: el denylist mantiene todo lo prohibido al IMPLEMENTER", () => {
+  for (const bad of ["Bash(git commit *)", "Bash(git push *)", "Bash(curl *)", "WebFetch", "WebSearch"]) {
+    assert.ok(CLAUDE_REVIEW_DISALLOWED_TOOLS.includes(bad), `denylist review debe incluir ${bad}`);
+  }
+});
+
+// ── 14. RAIL-D-00005: resume por ROL (buildResumePrompt) ──────────────
+
+import { buildResumePrompt } from "../src/adapters/claude-code.js";
+
+test("resume IMPLEMENTER: framing de IMPLEMENTER + --resume + misma sesión", () => {
+  const env = makeEnvelope({ resumeAnswer: "Sí, continuá con Postgres." });
+  const prompt = buildPrompt(env);
+  assert.equal(prompt, buildResumePrompt(env));
+  assert.match(prompt, /Sos el IMPLEMENTER del Rail Harness/);
+  assert.match(prompt, /RESPUESTA HUMANA:/);
+  assert.match(prompt, /Continuá desde donde quedó la implementación/);
+  const args = buildClaudeArgs(env);
+  assert.equal(args[args.indexOf("--resume") + 1], SESSION_ID);
+  assert.ok(!args.includes("--session-id"));
+});
+
+test("resume REVIEWER: conserva framing REVIEWER read-only, NO texto genérico de IMPLEMENTER", () => {
+  const env = makeEnvelope({
+    role: "REVIEWER",
+    resumeAnswer: "El criterio X aplica; seguí revisando.",
+    roleBrief: { implementationSummary: "hecho X", changedFiles: ["src/a.js"] }
+  });
+  const prompt = buildPrompt(env);
+  assert.equal(prompt, buildResumePrompt(env));
+  assert.match(prompt, /Sos el REVIEWER independiente del Rail Harness/);
+  assert.match(prompt, /RESPUESTA HUMANA:/);
+  assert.match(prompt, /SÓLO lectura/);
+  assert.match(prompt, /CONTEXTO DE LA IMPLEMENTACIÓN A REVISAR/);
+  assert.doesNotMatch(prompt, /Continuá desde donde quedó la implementación/);
+  assert.doesNotMatch(prompt, /Sos el IMPLEMENTER/);
+  // Still a resumed conversation: --resume + same session, read-only posture.
+  const args = buildClaudeArgs(env);
+  assert.equal(args[args.indexOf("--resume") + 1], SESSION_ID);
+  assert.ok(!args.includes("--session-id"));
+  assert.equal(args[args.indexOf("--tools") + 1], "Read,Glob,Grep,Bash");
+});
+
+test("resume TESTER: conserva framing TESTER (comportamiento/AC), distinto del REVIEWER", () => {
+  const base = {
+    role: "TESTER",
+    resumeAnswer: "El AC-02 se valida así; reejecutá.",
+    roleBrief: { acceptanceCriteria: [{ id: "T5-AC-02" }] }
+  };
+  const env = makeEnvelope(base);
+  const prompt = buildPrompt(env);
+  assert.equal(prompt, buildResumePrompt(env));
+  assert.match(prompt, /Sos el TESTER independiente del Rail Harness/);
+  assert.match(prompt, /Acceptance Criteria/);
+  assert.match(prompt, /RESPUESTA HUMANA:/);
+  assert.doesNotMatch(prompt, /Continuá desde donde quedó la implementación/);
+  assert.doesNotMatch(prompt, /Sos el IMPLEMENTER/);
+  // Different wording from the resumed REVIEWER.
+  const reviewerEnv = makeEnvelope({ ...base, role: "REVIEWER" });
+  assert.notEqual(buildResumePrompt(env), buildResumePrompt(reviewerEnv));
+  const args = buildClaudeArgs(env);
+  assert.equal(args[args.indexOf("--resume") + 1], SESSION_ID);
+});

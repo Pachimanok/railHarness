@@ -628,3 +628,52 @@ test("integración: Worker Core + placeholder + parada controlada", async () => 
   assert.equal(api.calls.finishRun[0].payload.outcome, "RELEASED");
   assert.equal(worker.getState().phase, WORKER_PHASES.STOPPED);
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// N2 — an UNKNOWN execution outcome closes the Run FAILED, never RELEASED
+// (aligned with mapOrchestrationOutcome's `<unknown> -> FAILED`).
+// ─────────────────────────────────────────────────────────────────────────
+
+test("N2: execution resuelve un outcome desconocido => finishRun(FAILED), nunca RELEASED por default", async () => {
+  const api = fakeRail();
+  let worker;
+  worker = createWorkerCore({
+    api,
+    projectId: PID,
+    createExecution: () => ({
+      done: Promise.resolve({ outcome: "WAT", note: "outcome interno no reconocido" }),
+      cancel() {}
+    }),
+    sleep: async () => worker.requestStop("fin de test"),
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn: () => {},
+    logger: () => {}
+  });
+
+  await worker.start();
+
+  assert.equal(api.calls.finishRun.length, 1);
+  assert.equal(api.calls.finishRun[0].payload.outcome, "FAILED", "unknown -> FAILED, no RELEASED");
+});
+
+test("N2: shutdown/release genuino sigue cerrando RELEASED; COMPLETED y FAILED pasan igual", async () => {
+  for (const [outcome, expected] of [
+    ["COMPLETED", "COMPLETED"],
+    ["FAILED", "FAILED"],
+    ["RELEASED", "RELEASED"]
+  ]) {
+    const api = fakeRail();
+    let worker;
+    worker = createWorkerCore({
+      api,
+      projectId: PID,
+      createExecution: () => ({ done: Promise.resolve({ outcome, note: "x" }), cancel() {} }),
+      sleep: async () => worker.requestStop("fin de test"),
+      setIntervalFn: () => ({ unref() {} }),
+      clearIntervalFn: () => {},
+      logger: () => {}
+    });
+    await worker.start();
+    assert.equal(api.calls.finishRun[0].payload.outcome, expected, `${outcome} pasa como ${expected}`);
+  }
+});

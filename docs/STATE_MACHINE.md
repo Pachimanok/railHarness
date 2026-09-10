@@ -27,13 +27,27 @@ BACKLOG ──▶ READY ──▶ CLAIMED ──▶ IN_PROGRESS ──▶ REVIEW
 | `BACKLOG` | Not ready to be worked. | none |
 | `READY` | Claimable. | `claim` (only from here) → `CLAIMED` |
 | `CLAIMED` | A Run exists; work not started. | `transition → IN_PROGRESS` |
-| `IN_PROGRESS` | Adapter is working. | heartbeat; on success `→ REVIEWING` |
-| `REVIEWING` | Handed to Code Review. | Harness bootstrap frontier — later tickets own the tail |
+| `IN_PROGRESS` | Adapter is working. | Orchestration: `IMPLEMENTER` PASS ⇒ `createCheck(IMPLEMENTATION)` then `→ REVIEWING` |
+| `REVIEWING` | Handed to Code Review. | Orchestration: `REVIEWER` PASS ⇒ `createCheck(CODE_REVIEW)` then `→ TESTING`; `REWORK` ⇒ governed rewind `→ IN_PROGRESS`, re-run IMPLEMENTER, then a fresh independent REVIEWER |
+| `TESTING` | Handed to the Tester. | Orchestration: `TESTER` PASS ⇒ `createCheck(AUTOMATED_TESTS)` + `createCheck(ACCEPTANCE_CRITERIA)` then `→ SANDBOX_READY`; `REWORK` ⇒ governed rewind `→ IN_PROGRESS`, re-run IMPLEMENTER, then a fresh REVIEWER **and** TESTER (re-review is mandatory) |
+| `SANDBOX_READY` | Automated flow done; evidence recorded. | Harness frontier — the deploy / `SANDBOX` gate past it is `humanOnly`: hand off, never fabricate an approval |
 | `BLOCKED` | A blocking Agent Query is open. | wait for human resolution; never claim/recover while blocked |
+
+Every check above is created **with evidence** and **before** the transition
+it gates (RAIL-D-00005, T5-AC-01). A check the evidence does not back is not
+created and the cycle does not advance. See `docs/ORCHESTRATION.md`.
 
 **Rewind:** on `RELEASE` / `FAILED` in a normal claim flow, the reference
 walks `REVIEWING → IN_PROGRESS → READY → BACKLOG` with a reason. Recovery
 flows never rewind (see below).
+
+**REWORK rewind (RAIL-D-00005):** a `REWORK` from the REVIEWER or TESTER first
+requests a **governed** `REVIEWING → IN_PROGRESS` (or `TESTING → IN_PROGRESS`)
+from Rail. The IMPLEMENTER is re-run **only if Rail accepts** that transition;
+if Rail rejects it, no IMPLEMENTER runs, no `IMPLEMENTATION` PASS is published,
+and the orchestration ends `FAILED` (or `HANDOFF` on a `humanOnly` rewind). The
+Harness never re-runs the IMPLEMENTER while Rail still sits in `REVIEWING` /
+`TESTING`, and never fabricates the backward transition.
 
 ## Run states
 
@@ -95,11 +109,24 @@ worktree is still on disk.
 - Only `POST /recover` mutates. If the endpoint is absent (404/405/501) the
   Harness reports the limitation and aborts with no alternative mutation.
 
-## Outcome → Rail mapping (reference behaviour, for the Orchestration ticket)
+## Outcome → Rail mapping (implemented in `src/orchestration/`, RAIL-D-00005)
 
-| `ExecutionResult.outcome` | Rail effect |
+An adapter `ExecutionResult.outcome` is normalized per role into a
+`RoleResult.decision` (`docs/ORCHESTRATION.md`); the orchestrator then acts:
+
+| role decision | Rail effect (governed; Rail re-validates) |
 |---|---|
-| `IMPLEMENTED` | `createCheck(IMPLEMENTATION/PASS)` + `transition → REVIEWING` |
-| `BLOCKED` | `createQuery({blocking:true})`, wait for human, resume adapter |
-| `RELEASE` | `finishRun(RELEASED)` + rewind (claim flow) / keep `IN_PROGRESS` (recovery flow) |
-| `FAILED` | `finishRun(FAILED)` + rewind (claim flow) / keep `IN_PROGRESS` (recovery flow) |
+| `PASS` (IMPLEMENTER) | `createCheck(IMPLEMENTATION/PASS, evidence)` → `transition IN_PROGRESS → REVIEWING` |
+| `PASS` (REVIEWER) | `createCheck(CODE_REVIEW/PASS, evidence)` → `transition REVIEWING → TESTING` |
+| `PASS` (TESTER) | `createCheck(AUTOMATED_TESTS/PASS)` + `createCheck(ACCEPTANCE_CRITERIA/PASS)` → `transition TESTING → SANDBOX_READY` |
+| `BLOCKED` (any role) | `createQuery({ blocking:true, runId })`; `execute()` stays **pending** while the query is open (the Core keeps heartbeating, `finishRun` is not called); governed resume only — same `session.id` + role framing — never an invented answer |
+| `REWORK` (REVIEWER / TESTER) | governed rewind `REVIEWING`/`TESTING → IN_PROGRESS`, then IMPLEMENTER `RECOVERY` + fresh `IMPLEMENTATION` PASS + `IN_PROGRESS → REVIEWING` + a fresh independent REVIEWER (a TESTER rework also re-runs the TESTER only after that review). Rail rejecting the rewind ⇒ `FAILED`, **no IMPLEMENTER, no PASS check** |
+| `RELEASE` (IMPLEMENTER) | orchestration ends `RELEASED`; the Worker Core closes the Run `RELEASED` |
+| `FAILED` (any role) | orchestration ends `FAILED`; the Worker Core closes the Run `FAILED` |
+| `humanOnly` frontier | governed factual note + hand-off; **no approval fabricated**; orchestration `HANDOFF` ⇒ Worker Core `finishRun(COMPLETED)` (a valid frontier reached, not a catch-all `RELEASED`) |
+
+The happy path ends `finishRun(COMPLETED)` — **not** `RELEASED`. The Worker Core
+still owns `finishRun`; the orchestrator never calls it. RailSoft's Run outcomes
+are `COMPLETED` / `FAILED` / `ABANDONED` / `RELEASED` (RailSoft is authoritative
+above this mirror). A rejected check / transition / query / rewind is respected —
+never forced, never simulated.

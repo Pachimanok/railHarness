@@ -64,23 +64,22 @@ identificadores de código/configuración ni las claves JSON de los contratos.
 | **Worker Core** (`src/worker/`, `npm run worker`) | bootstrapped | Persistent process. Owns one Run at a time: validate Rail → discover `READY` → preflight → atomic claim → heartbeat supervisor + one supervised execution → fencing / controlled shutdown. Drives an injected execution collaborator (placeholder for now). Keeps `claimToken` inside the Core. Human logs Spanish. See `docs/WORKER_CORE.md`. |
 | **Workspace Manager** (`src/workspace/workspace-manager.js`) | bootstrapped | Create/reuse an isolated `git worktree` + ticket branch under `RAIL_WORKSPACE_ROOT`, validating the ticket's `targetRepository` against the primary clone's `origin`. Runs only after a valid claim; never sees a `claimToken`; never writes a credential into the tree. Returns the workspace path. Injectable as the Worker Core's `createExecution`. See `docs/WORKSPACE_MANAGER.md`. |
 | **AdapterRouter** (`src/adapters/adapter-router.js`) | bootstrapped | Provider-agnostic seam: select an adapter by explicit config, reject unknown providers deterministically, forward a secret-checked `ExecutionEnvelope` to `adapter.preflight` / `run` / `createExecution`. No Rail logic, no `claimToken`. claude-code is the only provider wired in this ticket; codex/others slot into the `adapters` map without touching the Worker Core. See `docs/ADAPTER_ROUTER.md`. |
-| **Orchestration** | later ticket | Drive the `WorkCycle` state machine end to end (`docs/STATE_MACHINE.md`), map `ExecutionResult.outcome` onto Rail transitions/checks, wire the AdapterRouter into the Worker Core loop, handle recovery. |
+| **Orchestration** (`src/orchestration/`) | bootstrapped (RAIL-D-00005) | Runs `IMPLEMENTER → REVIEWER → TESTER` as separate governed adapter executions on the Run the Worker Core owns; publishes `IMPLEMENTATION` / `CODE_REVIEW` / `AUTOMATED_TESTS` / `ACCEPTANCE_CRITERIA` **with evidence, before** each gated transition; turns a subagent `BLOCKED` into a blocking Agent Query and **waits** for a governed human resolution (`execute()` stays pending — the Core keeps heartbeating, the Run is not finished; no invented answer); routes a REVIEWER / TESTER `REWORK` through a governed rewind to `IN_PROGRESS`; hands off a `humanOnly` frontier without fabricating an approval; respects every Rail rejection. The happy path finishes the Run `COMPLETED`. Wired into `npm run worker` as the Core's `createExecution`. Never claims / recovers / heartbeats / finishes the Run. See `docs/ORCHESTRATION.md`. |
+| Full resume / recovery of an orphaned `IN_PROGRESS` cycle | later ticket | — |
 
 ## What this bootstrap deliberately does NOT do
 
-- The AdapterRouter and the Claude Code adapter exist and are unit-tested, but
-  `npm run worker` still wires the **placeholder** execution — the router is
-  not yet plugged into the Worker Core loop (Orchestration — later).
-- No `WorkCycle` state transitions, no checks / queries, no
-  Implementer/Reviewer/Tester orchestration, no `ExecutionResult.outcome` →
-  Rail mapping (Orchestration — later).
-- No full resume / recovery of an orphaned `IN_PROGRESS` cycle.
+- No full resume / recovery of an orphaned `IN_PROGRESS` cycle (later ticket).
+- No deploy / `SANDBOX` / `STAGING` / `PRODUCTION` handling — the Orchestration
+  flow ends at `SANDBOX_READY`; the manual gates past it are a hand-off, never
+  a fabricated approval.
+- The `BACKLOG → READY` dependency re-evaluation gap is **not** solved here —
+  the Worker Core only discovers `READY`.
 
-The Worker Core (`src/worker/`) **is** delivered: it runs the autonomous
-`validate → discover → preflight → claim → heartbeat → fence/shutdown` loop
-against an injected execution collaborator (`docs/WORKER_CORE.md`). The
-remaining pieces plug into that loop. `src/index.js` is the single import
-point.
+As of RAIL-D-00005 `npm run worker` runs the real flow:
+`validate → discover → preflight → claim → heartbeat → **Orchestration
+(Implementer → Reviewer → Tester, governed checks + transitions)** →
+fence/shutdown`. `src/index.js` is the single import point.
 
 ## Authority sources
 

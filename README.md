@@ -10,21 +10,23 @@ governed execution against a code repository.
 
 ## Status
 
-The **base** plus the **Worker Core** — the persistent process that consumes
-Rail's `READY` queue. It still runs a *placeholder* execution: no real
-workspace, no real adapter, no `WorkCycle` orchestration yet.
+The **base**, the **Worker Core**, the **Workspace Manager**, the
+**AdapterRouter**, and — as of RAIL-D-00005 — the **Orchestration** layer.
+`npm run worker` now runs the real flow end to end: discover `READY` → claim →
+isolated workspace → `IMPLEMENTER → REVIEWER → TESTER` with governed
+checks / transitions → `SANDBOX_READY`.
 
-| Delivered here | Later ticket |
+| Delivered | Notes |
 |---|---|
-| Base structure, docs, contracts | — |
-| `src/config/` — runtime configuration | consumed by Worker Core |
-| `src/rail/` — `RailApiClient` | consumed by Worker Core / Orchestration |
-| `src/contracts/` — `ExecutionEnvelope` / `ExecutionResult` | consumed by AdapterRouter |
+| `src/config/` — runtime configuration | — |
+| `src/rail/` — `RailApiClient` | Harness / Core / Orchestration tier only |
+| `src/contracts/` — `ExecutionEnvelope` (+ `role` / `roleBrief`) / `ExecutionResult` | — |
 | `src/security/` — secret sanitization | used everywhere |
-| `src/adapters/claude-preflight.js` — pure flag checks | AdapterRouter completes it |
-| `src/worker/` — **Worker Core**: discovery, preflight, atomic claim, heartbeat, fencing, controlled shutdown (`docs/WORKER_CORE.md`) | Orchestration wires the real execution |
-| `src/workspace/` — **Workspace Manager**: isolated `git worktree` + ticket branch under `RAIL_WORKSPACE_ROOT`, `targetRepository` ⇄ `origin` validation (`docs/WORKSPACE_MANAGER.md`) | AdapterRouter runs inside the prepared workspace |
-| — | **AdapterRouter**, **Orchestration**, resume/recovery |
+| `src/adapters/` — **AdapterRouter** + Claude Code adapter (role-aware tool posture) | `docs/ADAPTER_ROUTER.md` |
+| `src/worker/` — **Worker Core**: discovery, preflight, atomic claim, heartbeat, fencing, shutdown | `docs/WORKER_CORE.md` |
+| `src/workspace/` — **Workspace Manager**: isolated `git worktree` + ticket branch, repo validation | `docs/WORKSPACE_MANAGER.md` |
+| `src/orchestration/` — **Orchestration**: roles, Agent Queries, checks, transitions, humanOnly hand-off | `docs/ORCHESTRATION.md` |
+| — | Full resume / recovery of an orphaned `IN_PROGRESS` cycle — later ticket |
 
 ## Documentation
 
@@ -34,6 +36,8 @@ workspace, no real adapter, no `WorkCycle` orchestration yet.
 - [`docs/ADAPTER_CONTRACT.md`](docs/ADAPTER_CONTRACT.md) — the interface every coding adapter must satisfy.
 - [`docs/WORKER_CORE.md`](docs/WORKER_CORE.md) — the persistent worker: discovery, claim, heartbeat, fencing, shutdown.
 - [`docs/WORKSPACE_MANAGER.md`](docs/WORKSPACE_MANAGER.md) — isolated `git worktree` + ticket branch, repo validation, safe reuse/cleanup.
+- [`docs/ADAPTER_ROUTER.md`](docs/ADAPTER_ROUTER.md) — provider-independent adapter routing and the Claude Code adapter.
+- [`docs/ORCHESTRATION.md`](docs/ORCHESTRATION.md) — roles, Agent Queries, checks, transitions, humanOnly hand-off.
 
 ## Running the Worker Core
 
@@ -42,10 +46,13 @@ npm run worker   # node src/worker/cli.js
 ```
 
 Reads `.env` (see Configuration). Polls the `READY` queue for the configured
-project, claims one ticket at a time, holds the Run with a heartbeat, and
-tears down cleanly on `SIGINT` / `SIGTERM`. Optional cadence overrides:
+project, claims one ticket at a time, prepares an isolated workspace, and runs
+the Orchestration flow (`IMPLEMENTER → REVIEWER → TESTER`, governed checks and
+transitions — `docs/ORCHESTRATION.md`), holding the Run with a heartbeat and
+tearing down cleanly on `SIGINT` / `SIGTERM`. Optional overrides:
 `RAIL_HEARTBEAT_INTERVAL_MS` (default `300000`), `RAIL_DISCOVERY_POLL_MS`
-(default `30000`). The token and any per-Run `claimToken` are never printed.
+(default `30000`), `RAIL_ADAPTER_PROVIDER` (default `claude-code`). Requires
+`RAIL_WORKSPACE_ROOT`. The token and any per-Run `claimToken` are never printed.
 
 ## Configuration
 
@@ -75,7 +82,11 @@ import {
   stripSecretKeys, redactSecrets, safeEnvironment,
   createWorkerCore, WORKER_PHASES,
   assertTicketClaimable, isTicketClaimable, pickDiscoveryRef,
-  createPlaceholderExecution
+  createPlaceholderExecution,
+  prepareWorkspace, createWorkspaceExecution,
+  createAdapterRouter,
+  createOrchestrator, createOrchestrationExecution,
+  ROLES, interpretExecutionResult, createRailEffects
 } from "rail-harness"; // ./src/index.js
 ```
 

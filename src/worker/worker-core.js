@@ -11,16 +11,17 @@
  * never mutates work state on its own judgement, and — while idle — creates
  * NO Run and NO workspace.
  *
- * What this ticket deliberately does NOT do (see docs/WORKER_CORE.md):
- *   - real isolated git workspace (Workspace Manager — later ticket)
- *   - real Claude Code adapter (AdapterRouter — later ticket)
- *   - Implementer / Reviewer / Tester orchestration and WorkCycle state
- *     transitions (Orchestration — later ticket)
- *   - full resume / recovery of an orphaned cycle
+ * The work between `claim` and `finish` is supplied by an injected
+ * `createExecution` collaborator. As of RAIL-D-00005 the CLI wires
+ * `createOrchestrationExecution` (isolated workspace → Implementer → Reviewer →
+ * Tester, governed checks / transitions). `createPlaceholderExecution` (touches
+ * nothing) stays for tests / dry-runs. This module still never calls
+ * `POST /transitions` / `/checks` / `/queries` itself — those belong to the
+ * collaborator, on the Run the Core already owns. The Core owns `finishRun` and
+ * passes the collaborator's mapped Run outcome through unchanged.
  *
- * The work that happens between `claim` and `finish` is supplied by an
- * injected `createExecution` collaborator; the default CLI wires a placeholder
- * (`createPlaceholderExecution`) that touches nothing.
+ * What this module deliberately does NOT do (see docs/WORKER_CORE.md):
+ *   - full resume / recovery of an orphaned IN_PROGRESS cycle (later ticket)
  *
  * SECURITY INVARIANT: the per-Run `claimToken` lives ONLY inside this module,
  * captured in the closure of the active-run record's `heartbeat()` / `finish()`
@@ -58,6 +59,18 @@ export const DEFAULT_DISCOVERY_LIMIT = 10;
  * retried on the next interval (if the lease truly lapsed, the following
  * heartbeat gets a definitive rejection and fencing happens then).
  */
+/**
+ * Run outcomes RailSoft's contract supports on `finishRun`
+ * (`COMPLETED` / `FAILED` / `ABANDONED` / `RELEASED`). The orchestration
+ * collaborator returns one of these (via `mapOrchestrationOutcome`); the Worker
+ * Core passes it through UNCHANGED — the happy path finishes `COMPLETED`, not
+ * `RELEASED`. Anything UNRECOGNIZED is closed as `FAILED` — aligned with
+ * `mapOrchestrationOutcome` (`<unknown> → FAILED`). `RELEASED` is NOT the
+ * catch-all: it is reserved for a genuine release / controlled shutdown
+ * (`teardownActive`). RailSoft is authoritative above the local docs/mirror.
+ */
+const RUN_FINISH_OUTCOMES = new Set(["COMPLETED", "FAILED", "ABANDONED", "RELEASED"]);
+
 const OWNERSHIP_REJECTION_STATUSES = new Set([401, 403, 404, 409, 410]);
 const OWNERSHIP_REJECTION_CODE_RE =
   /(OWNERSHIP|NOT[_-]?OWNER|LEASE|ABANDONED|FENCED|FORBIDDEN|NOT[_-]?FOUND|CONFLICT|EXPIRED)/i;
@@ -479,14 +492,17 @@ export function createWorkerCore({
         return;
       }
 
-      // Normal completion. Orchestration (checks / transitions) is a later
-      // ticket; here the Worker Core only closes the Run it owns.
+      // Normal completion. The orchestration collaborator already mapped its
+      // internal outcome onto a RailSoft Run outcome (`mapOrchestrationOutcome`)
+      // — the Worker Core owns `finishRun` and passes that outcome through
+      // unchanged. A COMPLETED orchestration finishes the Run COMPLETED. An
+      // unrecognized / missing outcome is closed as FAILED (never RELEASED as a
+      // catch-all) — aligned with `mapOrchestrationOutcome`'s `<unknown> → FAILED`.
       const value = outcome.value && typeof outcome.value === "object" ? outcome.value : {};
-      const runOutcome = value.outcome === "FAILED" ? "FAILED" : "RELEASED";
+      const runOutcome = RUN_FINISH_OUTCOMES.has(value.outcome) ? value.outcome : "FAILED";
       const note =
         value.note ||
-        "La ejecución terminó sin orquestación conectada (TMP-005 pendiente). " +
-          "El Worker Core cierra el Run sin mutar el repositorio.";
+        "La ejecución terminó sin un outcome explícito; el Worker Core cierra el Run como FAILED.";
       await safeFinish(run, runOutcome, note);
       active = null;
     } finally {

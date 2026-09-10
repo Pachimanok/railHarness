@@ -34,6 +34,16 @@ export const EXECUTION_KINDS = Object.freeze([
   "RECOVERY" // continuation of an already-started cycle (worktree is dirty)
 ]);
 
+/**
+ * Which governed role the adapter is being asked to play for this execution
+ * (see `docs/ORCHESTRATION.md`). Additive and backward-compatible: callers that
+ * omit `role` get `"IMPLEMENTER"`, which is exactly the pre-RAIL-D-00005
+ * behaviour. `REVIEWER` and `TESTER` are independent, read-only-on-the-repo
+ * executions the Orchestration layer drives through the same AdapterRouter.
+ * Machine-readable identifiers — never translated.
+ */
+export const EXECUTION_ROLES = Object.freeze(["IMPLEMENTER", "REVIEWER", "TESTER"]);
+
 function frozenContinuation(input) {
   if (input == null) return null;
   if (typeof input !== "object") {
@@ -59,6 +69,11 @@ function frozenContinuation(input) {
  * @param {{id:string}}   p.session              adapter session id
  * @param {object|null}   [p.continuation]       RECOVERY context; null for IMPLEMENT
  * @param {string|null}   [p.resumeAnswer]       human answer resuming a prior BLOCKED execution
+ * @param {"IMPLEMENTER"|"REVIEWER"|"TESTER"} [p.role]  governed role (default IMPLEMENTER)
+ * @param {object|null}   [p.roleBrief]          extra, secret-stripped context a REVIEWER /
+ *                                                TESTER needs (implementation summary, changed
+ *                                                files, Acceptance Criteria). Never carries Rail
+ *                                                credentials — passed through `stripSecretKeys`.
  */
 export function buildExecutionEnvelope({
   kind,
@@ -67,12 +82,22 @@ export function buildExecutionEnvelope({
   workspace,
   session,
   continuation = null,
-  resumeAnswer = null
+  resumeAnswer = null,
+  role = "IMPLEMENTER",
+  roleBrief = null
 }) {
   if (!EXECUTION_KINDS.includes(kind)) {
     throw new Error(
       `kind must be one of ${EXECUTION_KINDS.join("|")} (got ${JSON.stringify(kind)})`
     );
+  }
+  if (!EXECUTION_ROLES.includes(role)) {
+    throw new Error(
+      `role must be one of ${EXECUTION_ROLES.join("|")} (got ${JSON.stringify(role)})`
+    );
+  }
+  if (roleBrief != null && typeof roleBrief !== "object") {
+    throw new Error("roleBrief must be an object or null");
   }
   if (!run || typeof run.id !== "string" || !run.id) {
     throw new Error("run.id is required");
@@ -99,12 +124,17 @@ export function buildExecutionEnvelope({
   const envelope = {
     schemaVersion: EXECUTION_ENVELOPE_SCHEMA_VERSION,
     kind,
+    role,
     run: Object.freeze({ id: run.id, branch: run.branch }),
     ticket: stripSecretKeys(ticket ?? {}),
     workspace: Object.freeze({ path: workspace.path }),
     session: Object.freeze({ id: session.id }),
     continuation: frozenContinuation(continuation),
     resumeAnswer,
+    // REVIEWER / TESTER context. Secret keys stripped, deep-frozen. null for a
+    // plain IMPLEMENTER execution.
+    roleBrief:
+      roleBrief == null ? null : Object.freeze(stripSecretKeys(roleBrief)),
     // Toda comunicación humana del runtime va en español; lo machine-readable
     // no se traduce. Se inyecta siempre — no es un parámetro del caller.
     languagePolicy: buildLanguagePolicy()
@@ -139,6 +169,9 @@ export function validateExecutionEnvelope(value) {
       errors.push(`schemaVersion must be "${EXECUTION_ENVELOPE_SCHEMA_VERSION}"`);
     }
     if (!EXECUTION_KINDS.includes(value.kind)) errors.push("kind is invalid");
+    if (value.role != null && !EXECUTION_ROLES.includes(value.role)) {
+      errors.push("role is invalid");
+    }
     if (!value.run?.id) errors.push("run.id is required");
     if (!value.run?.branch) errors.push("run.branch is required");
     if (!value.workspace?.path) errors.push("workspace.path is required");

@@ -131,6 +131,51 @@ export const CLAUDE_DISALLOWED_TOOLS = [
 ].join(",");
 
 /**
+ * REVIEWER / TESTER built-in tool set: NO `Edit` / `Write`. An independent
+ * review or test pass (docs/ORCHESTRATION.md) inspects the workspace and runs
+ * checks; it never mutates the tree. Both roles are read-only on the repo.
+ */
+export const CLAUDE_REVIEW_TOOLS = "Read,Glob,Grep,Bash";
+
+/** REVIEWER allow-list: read + search + read-only `git` only. */
+export const CLAUDE_REVIEW_ALLOWED_TOOLS = [
+  "Read",
+  "Glob",
+  "Grep",
+  "Bash(git status *)",
+  "Bash(git diff *)",
+  "Bash(git log *)",
+  "Bash(git show *)",
+  "Bash(git branch --show-current)",
+  "Bash(git rev-parse *)",
+  "Bash(git ls-files *)"
+].join(",");
+
+/** TESTER allow-list: the REVIEWER read-only set plus the common test runners. */
+export const CLAUDE_TEST_ALLOWED_TOOLS = [
+  CLAUDE_REVIEW_ALLOWED_TOOLS,
+  "Bash(npm test *)",
+  "Bash(npm run test *)",
+  "Bash(npm run lint *)",
+  "Bash(npm run typecheck *)",
+  "Bash(npm run build *)",
+  "Bash(pnpm test *)",
+  "Bash(yarn test *)",
+  "Bash(pytest *)",
+  "Bash(python -m pytest *)",
+  "Bash(go test *)",
+  "Bash(cargo test *)"
+].join(",");
+
+/**
+ * REVIEWER / TESTER deny-list: everything the IMPLEMENTER cannot do, plus
+ * `Edit` / `Write` — neither role writes to the tree.
+ */
+export const CLAUDE_REVIEW_DISALLOWED_TOOLS = [CLAUDE_DISALLOWED_TOOLS, "Edit", "Write"].join(
+  ","
+);
+
+/**
  * Flags `buildClaudeArgs` uses on TOP of `REQUIRED_CLAUDE_FLAGS`. Kept small
  * and verified in `preflight()` too, so "the adapter uses only options the
  * installed CLI supports" holds for the whole argv, not just the core list.
@@ -348,13 +393,109 @@ export function buildRecoveryPrompt(envelope) {
   ].join("\n");
 }
 
-/** Resume prompt: a human answered the blocking Agent Query. */
+const REVIEW_OUTPUT_RULES = [
+  "DECISIÓN DE SALIDA (respondé ÚNICAMENTE con el schema JSON solicitado):",
+  "",
+  "IMPLEMENTED: la revisión/validación PASA. El trabajo cumple lo pedido y no",
+  "             encontraste bloqueos ni motivos de rework.",
+  "RELEASE:     el trabajo NO pasa: hay que devolverlo al IMPLEMENTER. Detallá",
+  "             en 'summary' los hallazgos concretos que hay que corregir.",
+  "BLOCKED:     necesitás una respuesta humana concreta para poder decidir.",
+  "             'question' es obligatorio; completá 'context' e 'impact'.",
+  "FAILED:      problema técnico que te impide revisar/testear (no es un juicio",
+  "             sobre el trabajo).",
+  "",
+  "Toda comunicación humana (summary, question, context, impact) va en español.",
+  "No traduzcas los valores machine-readable."
+].join("\n");
+
+function reviewBriefBlock(envelope) {
+  const brief = envelope.roleBrief || {};
+  return [
+    "CONTEXTO DE LA IMPLEMENTACIÓN A REVISAR:",
+    JSON.stringify(brief, null, 2)
+  ].join("\n");
+}
+
+/** REVIEWER prompt: independent code review, read-only on the tree. */
+export function buildReviewPrompt(envelope) {
+  const { run, ticket, languagePolicy } = envelope;
+  return [
+    languagePolicy.instruction,
+    "",
+    "Sos el REVIEWER independiente del Rail Harness. NO sos un segundo",
+    "IMPLEMENTER: no reimplementás ni editás archivos. Revisás el trabajo ya",
+    "hecho en el worktree y emitís una decisión estructurada.",
+    "",
+    `RUN: ${run.id}`,
+    `BRANCH: ${run.branch}`,
+    "",
+    reviewBriefBlock(envelope),
+    "",
+    "TICKET Y SPEC:",
+    JSON.stringify(ticket, null, 2),
+    "",
+    "REGLAS OBLIGATORIAS:",
+    `- Trabajá sólo dentro del worktree actual (branch ${run.branch}); NO cambies de branch.`,
+    "- SÓLO lectura: no uses Edit ni Write, no hagas git commit/push/merge/reset/checkout/switch/clean/stash.",
+    "- No uses red (curl/wget/WebFetch/WebSearch). No llames a la API de Rail.",
+    "- Basá la decisión en el diff real y en la SPEC/ticket; no inventes criterios nuevos.",
+    "",
+    REVIEW_OUTPUT_RULES
+  ].join("\n");
+}
+
+/** TESTER prompt: independent behaviour + Acceptance Criteria validation. */
+export function buildTestPrompt(envelope) {
+  const { run, ticket, languagePolicy } = envelope;
+  return [
+    languagePolicy.instruction,
+    "",
+    "Sos el TESTER independiente del Rail Harness. Sos distinto del REVIEWER:",
+    "no juzgás el estilo del código, VALIDÁS comportamiento y Acceptance",
+    "Criteria ejecutando los tests/verificaciones que correspondan. NO editás",
+    "archivos.",
+    "",
+    `RUN: ${run.id}`,
+    `BRANCH: ${run.branch}`,
+    "",
+    reviewBriefBlock(envelope),
+    "",
+    "TICKET Y SPEC:",
+    JSON.stringify(ticket, null, 2),
+    "",
+    "REGLAS OBLIGATORIAS:",
+    `- Trabajá sólo dentro del worktree actual (branch ${run.branch}); NO cambies de branch.`,
+    "- SÓLO lectura del repo + ejecución de tests/lint/build permitidos. No uses Edit ni Write.",
+    "- No hagas git commit/push/merge/reset/checkout/switch/clean/stash. Sin red. Sin llamar a Rail.",
+    "- En 'tests' devolvé cada comando ejecutado con su resultado ('comando : PASS/FAIL').",
+    "- Sólo devolvé IMPLEMENTED si ejecutaste evidencia real y TODOS los Acceptance Criteria se cumplen.",
+    "",
+    REVIEW_OUTPUT_RULES
+  ].join("\n");
+}
+
+/**
+ * Resume prompt: a human answered the blocking Agent Query. The role framing is
+ * PRESERVED — a resumed REVIEWER / TESTER must not receive generic IMPLEMENTER
+ * text ("Continuá desde donde quedó la implementación"). Same `session.id` +
+ * `--resume`; this only decides the wording.
+ */
 export function buildResumePrompt(envelope) {
+  const role = envelope.role ?? "IMPLEMENTER";
+  if (role === "REVIEWER") return buildReviewResumePrompt(envelope);
+  if (role === "TESTER") return buildTestResumePrompt(envelope);
+  return buildImplementerResumePrompt(envelope);
+}
+
+/** Resume framing for the IMPLEMENTER (fresh implementation or RECOVERY). */
+function buildImplementerResumePrompt(envelope) {
   const { run, languagePolicy, resumeAnswer, kind } = envelope;
   return [
     languagePolicy.instruction,
     "",
-    "La Agent Query que bloqueaba este Rail Run fue respondida por un humano.",
+    "Sos el IMPLEMENTER del Rail Harness. La Agent Query que bloqueaba este Rail",
+    "Run fue respondida por un humano.",
     "",
     "RESPUESTA HUMANA:",
     String(resumeAnswer),
@@ -372,11 +513,101 @@ export function buildResumePrompt(envelope) {
   ].join("\n");
 }
 
+/** Resume framing for the REVIEWER — independent review, still read-only. */
+function buildReviewResumePrompt(envelope) {
+  const { run, languagePolicy, resumeAnswer } = envelope;
+  return [
+    languagePolicy.instruction,
+    "",
+    "Sos el REVIEWER independiente del Rail Harness. La Agent Query que bloqueaba",
+    "tu revisión fue respondida por un humano. NO sos un segundo IMPLEMENTER: no",
+    "reimplementás ni editás archivos.",
+    "",
+    "RESPUESTA HUMANA:",
+    String(resumeAnswer),
+    "",
+    `RUN: ${run.id}`,
+    `BRANCH: ${run.branch}`,
+    "",
+    reviewBriefBlock(envelope),
+    "",
+    "Retomá la MISMA revisión read-only desde donde quedó, incorporá la respuesta",
+    "humana y emití la decisión estructurada (review PASS / rework).",
+    "",
+    "REGLAS OBLIGATORIAS:",
+    `- Trabajá sólo dentro del worktree actual (branch ${run.branch}); NO cambies de branch.`,
+    "- SÓLO lectura: no uses Edit ni Write, no hagas git commit/push/merge/reset/checkout/switch/clean/stash.",
+    "- No uses red (curl/wget/WebFetch/WebSearch). No llames a la API de Rail.",
+    "- Basá la decisión en el diff real y en la SPEC/ticket; no inventes criterios nuevos.",
+    "",
+    REVIEW_OUTPUT_RULES
+  ].join("\n");
+}
+
+/** Resume framing for the TESTER — behaviour + Acceptance Criteria, read-only. */
+function buildTestResumePrompt(envelope) {
+  const { run, languagePolicy, resumeAnswer } = envelope;
+  return [
+    languagePolicy.instruction,
+    "",
+    "Sos el TESTER independiente del Rail Harness. La Agent Query que bloqueaba tu",
+    "validación fue respondida por un humano. Sos distinto del REVIEWER: VALIDÁS",
+    "comportamiento y Acceptance Criteria ejecutando tests/verificaciones. NO",
+    "editás archivos.",
+    "",
+    "RESPUESTA HUMANA:",
+    String(resumeAnswer),
+    "",
+    `RUN: ${run.id}`,
+    `BRANCH: ${run.branch}`,
+    "",
+    reviewBriefBlock(envelope),
+    "",
+    "Retomá la MISMA validación read-only desde donde quedó, incorporá la respuesta",
+    "humana y volvé a evaluar tests y Acceptance Criteria.",
+    "",
+    "REGLAS OBLIGATORIAS:",
+    `- Trabajá sólo dentro del worktree actual (branch ${run.branch}); NO cambies de branch.`,
+    "- SÓLO lectura del repo + ejecución de tests/lint/build permitidos. No uses Edit ni Write.",
+    "- No hagas git commit/push/merge/reset/checkout/switch/clean/stash. Sin red. Sin llamar a Rail.",
+    "- En 'tests' devolvé cada comando ejecutado con su resultado ('comando : PASS/FAIL').",
+    "- Sólo devolvé IMPLEMENTED si ejecutaste evidencia real y TODOS los Acceptance Criteria se cumplen.",
+    "",
+    REVIEW_OUTPUT_RULES
+  ].join("\n");
+}
+
 /** Pick the prompt for this envelope. */
 export function buildPrompt(envelope) {
   if (envelope.resumeAnswer != null) return buildResumePrompt(envelope);
+  const role = envelope.role ?? "IMPLEMENTER";
+  if (role === "REVIEWER") return buildReviewPrompt(envelope);
+  if (role === "TESTER") return buildTestPrompt(envelope);
   if (envelope.kind === "RECOVERY") return buildRecoveryPrompt(envelope);
   return buildImplementPrompt(envelope);
+}
+
+/** The built-in / allow / deny tool triple for this envelope's role. */
+export function toolPostureFor(role = "IMPLEMENTER") {
+  if (role === "REVIEWER") {
+    return {
+      tools: CLAUDE_REVIEW_TOOLS,
+      allowed: CLAUDE_REVIEW_ALLOWED_TOOLS,
+      disallowed: CLAUDE_REVIEW_DISALLOWED_TOOLS
+    };
+  }
+  if (role === "TESTER") {
+    return {
+      tools: CLAUDE_REVIEW_TOOLS,
+      allowed: CLAUDE_TEST_ALLOWED_TOOLS,
+      disallowed: CLAUDE_REVIEW_DISALLOWED_TOOLS
+    };
+  }
+  return {
+    tools: CLAUDE_TOOLS,
+    allowed: CLAUDE_ALLOWED_TOOLS,
+    disallowed: CLAUDE_DISALLOWED_TOOLS
+  };
 }
 
 // ── argv construction (pure) ──────────────────────────────────────────
@@ -399,6 +630,7 @@ export function isResumingSession(envelope) {
  */
 export function buildClaudeArgs(envelope) {
   assertClaudeJsonSchemaCompatible(EXECUTION_RESULT_JSON_SCHEMA);
+  const posture = toolPostureFor(envelope.role ?? "IMPLEMENTER");
   const args = [
     "--print",
     "--output-format",
@@ -408,11 +640,11 @@ export function buildClaudeArgs(envelope) {
     "--permission-mode",
     "auto",
     "--tools",
-    CLAUDE_TOOLS,
+    posture.tools,
     "--allowedTools",
-    CLAUDE_ALLOWED_TOOLS,
+    posture.allowed,
     "--disallowedTools",
-    CLAUDE_DISALLOWED_TOOLS
+    posture.disallowed
   ];
 
   const sid = String(envelope.session.id);
