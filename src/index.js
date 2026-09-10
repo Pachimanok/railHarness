@@ -60,6 +60,27 @@ export {
 } from "./adapters/claude-preflight.js";
 
 export {
+  CLAUDE_PROVIDER,
+  CLAUDE_TOOLS,
+  CLAUDE_ALLOWED_TOOLS,
+  CLAUDE_DISALLOWED_TOOLS,
+  FORBIDDEN_CLAUDE_FLAGS,
+  claudeCodeAdapter,
+  preflight as preflightClaudeCode,
+  run as runClaudeCode,
+  createClaudeCodeExecution,
+  buildPrompt as buildClaudePrompt,
+  buildClaudeArgs,
+  isResumingSession
+} from "./adapters/claude-code.js";
+
+export {
+  createAdapterRouter,
+  DEFAULT_ADAPTERS,
+  ADAPTER_ROUTER_ERROR_CODES
+} from "./adapters/adapter-router.js";
+
+export {
   HUMAN_LANGUAGE,
   PROTOCOL_TERMS,
   LANGUAGE_INSTRUCTION,

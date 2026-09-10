@@ -59,18 +59,21 @@ identificadores de código/configuración ni las claves JSON de los contratos.
 | **RailApiClient** (`src/rail/rail-api-client.js`) | bootstrapped | Speak the Rail protocol (`docs/PROTOCOL.md`). Read-only vs governed-mutating calls. Normalizes the Run handoff. |
 | **Contracts** (`src/contracts/`) | bootstrapped | `ExecutionEnvelope` (input to an adapter) and `ExecutionResult` (output from an adapter). |
 | **Secret sanitization** (`src/security/sanitize.js`) | bootstrapped | Strip secret keys from tickets, redact log strings, build a safe child environment. |
-| **Adapter preflight** (`src/adapters/claude-preflight.js`) | partial | Pure CLI-flag detection helpers. Executable preflight + runner come later. |
+| **Adapter preflight** (`src/adapters/claude-preflight.js`) | bootstrapped | Pure CLI-flag detection helpers. Consumed by the executable preflight in `src/adapters/claude-code.js`. |
+| **Claude Code adapter** (`src/adapters/claude-code.js`) | bootstrapped | Executable `preflight()` (real `claude --version` / `--help` + `REQUIRED_CLAUDE_FLAGS` check, never `--permission-prompts`) and `run(envelope)` — spawns the CLI non-interactively inside `workspace.path`, on `run.branch`, with `safeEnvironment()`, structured JSON output (`--json-schema` from `ExecutionResult`), parses with `parseExecutionResult()`, returns `{ sessionId, result }`. Cancelable child (SIGTERM→SIGKILL). See `docs/ADAPTER_ROUTER.md`. |
 | **Worker Core** (`src/worker/`, `npm run worker`) | bootstrapped | Persistent process. Owns one Run at a time: validate Rail → discover `READY` → preflight → atomic claim → heartbeat supervisor + one supervised execution → fencing / controlled shutdown. Drives an injected execution collaborator (placeholder for now). Keeps `claimToken` inside the Core. Human logs Spanish. See `docs/WORKER_CORE.md`. |
 | **Workspace Manager** (`src/workspace/workspace-manager.js`) | bootstrapped | Create/reuse an isolated `git worktree` + ticket branch under `RAIL_WORKSPACE_ROOT`, validating the ticket's `targetRepository` against the primary clone's `origin`. Runs only after a valid claim; never sees a `claimToken`; never writes a credential into the tree. Returns the workspace path. Injectable as the Worker Core's `createExecution`. See `docs/WORKSPACE_MANAGER.md`. |
-| **AdapterRouter** | later ticket | Route an `ExecutionEnvelope` to the right adapter (claude-code, codex, …); return an `ExecutionResult`. |
-| **Orchestration** | later ticket | Drive the `WorkCycle` state machine end to end (`docs/STATE_MACHINE.md`), including recovery. |
+| **AdapterRouter** (`src/adapters/adapter-router.js`) | bootstrapped | Provider-agnostic seam: select an adapter by explicit config, reject unknown providers deterministically, forward a secret-checked `ExecutionEnvelope` to `adapter.preflight` / `run` / `createExecution`. No Rail logic, no `claimToken`. claude-code is the only provider wired in this ticket; codex/others slot into the `adapters` map without touching the Worker Core. See `docs/ADAPTER_ROUTER.md`. |
+| **Orchestration** | later ticket | Drive the `WorkCycle` state machine end to end (`docs/STATE_MACHINE.md`), map `ExecutionResult.outcome` onto Rail transitions/checks, wire the AdapterRouter into the Worker Core loop, handle recovery. |
 
 ## What this bootstrap deliberately does NOT do
 
-- No adapter process spawning; the Worker Core runs a **placeholder**
-  execution that touches nothing (AdapterRouter — later).
+- The AdapterRouter and the Claude Code adapter exist and are unit-tested, but
+  `npm run worker` still wires the **placeholder** execution — the router is
+  not yet plugged into the Worker Core loop (Orchestration — later).
 - No `WorkCycle` state transitions, no checks / queries, no
-  Implementer/Reviewer/Tester orchestration (Orchestration — later).
+  Implementer/Reviewer/Tester orchestration, no `ExecutionResult.outcome` →
+  Rail mapping (Orchestration — later).
 - No full resume / recovery of an orphaned `IN_PROGRESS` cycle.
 
 The Worker Core (`src/worker/`) **is** delivered: it runs the autonomous

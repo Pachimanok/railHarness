@@ -39,7 +39,35 @@ test("schema is strict (additionalProperties false, all required)", () => {
   ]);
 });
 
-test("a well-formed result validates", () => {
+test("CLI schema does not declare an incompatible $schema (draft 2020-12)", () => {
+  // RAIL-D-00004 Tester finding: Claude Code 2.1.266 bundles a draft-07
+  // validator and rejects an unknown $schema meta-ref, failing the whole run.
+  // The schema must omit $schema (reference-aligned) or pin draft-07.
+  const meta = EXECUTION_RESULT_JSON_SCHEMA.$schema;
+  assert.ok(
+    meta === undefined || /draft-07/.test(String(meta)),
+    `EXECUTION_RESULT_JSON_SCHEMA.$schema must be absent or draft-07, got ${JSON.stringify(meta)}`
+  );
+  // Still a closed, complete ExecutionResult schema.
+  assert.equal(EXECUTION_RESULT_JSON_SCHEMA.type, "object");
+  assert.equal(EXECUTION_RESULT_JSON_SCHEMA.additionalProperties, false);
+  assert.deepEqual(EXECUTION_RESULT_JSON_SCHEMA.properties.outcome.enum, [...EXECUTION_OUTCOMES]);
+  assert.deepEqual(EXECUTION_RESULT_JSON_SCHEMA.properties.tests, {
+    type: "array",
+    items: { type: "string" }
+  });
+  assert.deepEqual([...EXECUTION_RESULT_JSON_SCHEMA.required].sort(), [
+    "context",
+    "filesChanged",
+    "impact",
+    "outcome",
+    "question",
+    "summary",
+    "tests"
+  ]);
+});
+
+test("a well-formed result validates (schema unchanged internally)", () => {
   const { valid, errors } = validateExecutionResult(ok());
   assert.ok(valid, JSON.stringify(errors));
 });

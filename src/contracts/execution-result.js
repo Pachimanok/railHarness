@@ -25,9 +25,16 @@ export const EXECUTION_RESULT_SCHEMA_VERSION = "0.1";
  * JSON Schema an adapter is asked to satisfy when producing structured
  * output. Kept `additionalProperties: false` and fully `required` so a
  * partial/loose object is rejected at the boundary.
+ *
+ * NO `$schema` meta-ref: this object is serialized verbatim into
+ * `claude --json-schema` and the installed Claude Code CLI bundles a draft-07
+ * validator. A `$schema` it does not recognize (e.g. draft 2020-12) makes the
+ * CLI reject the whole run with `no schema with key or ref "..."` (RAIL-D-00004
+ * Tester finding). The approved reference (`~/rail-runner/harness/adapters/
+ * claude-code.mjs` `RESULT_SCHEMA`) also omits it. `assertClaudeJsonSchemaCompatible`
+ * in `src/adapters/claude-code.js` guards against a regression.
  */
 export const EXECUTION_RESULT_JSON_SCHEMA = Object.freeze({
-  $schema: "https://json-schema.org/draft/2020-12/schema",
   title: "ExecutionResult",
   type: "object",
   additionalProperties: false,

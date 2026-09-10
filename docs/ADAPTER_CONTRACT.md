@@ -27,10 +27,12 @@ Verify the underlying CLI/tool is installed and supports the flags the
 adapter needs, **before** any Run is claimed. On failure, throw an `Error`
 that names what is missing and ends with `No claim was created.`
 
-The pure flag-detection helpers are bootstrapped in
-`src/adapters/claude-preflight.js` (`REQUIRED_CLAUDE_FLAGS`, `flagPresent`,
-`missingClaudeFlags`). The executable `preflight()` that shells out to the
-real CLI is delivered with the AdapterRouter ticket.
+The pure flag-detection helpers are in `src/adapters/claude-preflight.js`
+(`REQUIRED_CLAUDE_FLAGS`, `flagPresent`, `missingClaudeFlags`). The executable
+`preflight({ runCli? })` that shells out to `claude --version` / `--help` is
+in `src/adapters/claude-code.js` (RAIL-D-00004): it throws a Spanish `Error`
+ending `No claim was created.` when the binary is missing or a required flag
+is absent, and never inspects `--permission-prompts`.
 
 **`--permission-prompts` is intentionally excluded.** Adapter permission
 posture is expressed with `--permission-mode` only.
@@ -125,12 +127,45 @@ The AdapterRouter runs the adapter with `safeEnvironment()`
 (`src/security/sanitize.js`): every `RAIL_*` variable plus `CLAIM_TOKEN` /
 `RAIL_HUMAN_TOKEN` removed. Adapters never see the control plane.
 
-## Tooling posture (reference default for claude-code)
+## Tooling posture (claude-code, `src/adapters/claude-code.js`)
 
-- Non-interactive: `--print`, `--output-format json`, `--json-schema <ExecutionResult>`.
-- `--permission-mode auto`.
-- Tools limited to read/edit/search plus an allowlist of read-only `git` and
-  common `test` / `lint` / `build` / `typecheck` invocations. No `git`
-  mutation, no network, no `curl`.
-- A fresh execution uses `--session-id <uuid>` + `--name`; a resume after a
-  human-answered Agent Query uses `--resume <uuid>`.
+- Non-interactive: `--print`, `--output-format json`,
+  `--json-schema <EXECUTION_RESULT_JSON_SCHEMA>`. The schema is serialized
+  verbatim; it carries **no `$schema` meta-ref** because the installed CLI
+  (verified 2.1.266) bundles a draft-07 validator and rejects an unknown one,
+  failing the whole run (`assertClaudeJsonSchemaCompatible` guards this).
+- `--permission-mode auto`, and **`--permission-prompts` is never passed** — in
+  `--print` mode with no SDK host, anything that *would* prompt is denied
+  automatically instead of hanging.
+- **What the permission layer actually enforces** (measured against CLI 2.1.266,
+  RAIL-D-00004 Tester):
+  - `--disallowedTools` is a hard block — `curl` / `wget` / `nc` / `ssh` /
+    `WebFetch` / `WebSearch` and the mutating `git` verbs are refused, no prompt.
+  - `--tools` limits the built-in set, so `WebFetch` / `WebSearch` are not even
+    available.
+  - `--allowedTools` is **not** a closed allow-list under `--permission-mode
+    auto`: the `auto` classifier may auto-approve other commands that are
+    neither allow- nor deny-listed (e.g. `uname`, `id`, a `pytest` invocation,
+    even `pip install`). `Read` / `Edit` / `Write` are auto-approved for **any
+    path**, not confined to `workspace.path`.
+  - Therefore this posture is **not** an OS sandbox. Code the agent writes and
+    then runs via an allow-listed test runner (`npm test`, `pytest`) executes
+    with full filesystem and network access. Strong filesystem / network
+    isolation is deferred to the `SANDBOX` / `STAGING` manual gates (candidate
+    hardening: `--restricted`, `--add-dir`, `--strict-mcp-config`, an OS-level
+    sandbox). See the follow-up list in `docs/ADAPTER_ROUTER.md`.
+- `--allowedTools` (`CLAUDE_ALLOWED_TOOLS`): read/edit/search + read-only `git`
+  + common `test` / `lint` / `build` / `typecheck` runners.
+- `--disallowedTools` (`CLAUDE_DISALLOWED_TOOLS`): every mutating `git` verb
+  (`commit` / `push` / `merge` / `rebase` / `reset` / `checkout` / `switch` /
+  `clean` / `stash`), `curl` / `wget` / `nc` / `ssh`, `WebFetch`, `WebSearch`.
+- Session: a fresh IMPLEMENT uses `--session-id <uuid>` + `--name rail-<8>`;
+  a RECOVERY continuation or a resume after a human-answered Agent Query
+  (`envelope.resumeAnswer != null`) uses `--resume <uuid>` — it never mints a
+  new conversation for an existing session.
+- `cwd` is `envelope.workspace.path`; the child env is `safeEnvironment()`
+  plus `GIT_TERMINAL_PROMPT=0`; the branch is verified `=== envelope.run.branch`
+  before the CLI is spawned.
+- Exit `code !== 0`, empty output, invalid JSON, an unexpected wrapper, or a
+  schema-invalid object all REJECT with a technical error — never a fabricated
+  `IMPLEMENTED`.
