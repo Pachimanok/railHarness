@@ -86,7 +86,13 @@ const FORBIDDEN_MUTATION_MENTIONS = [
 ];
 
 function consoleSourceFiles() {
-  const dirs = [path.join(REPO_ROOT, "src", "console"), path.join(REPO_ROOT, "bin")];
+  // HC-04's `src/console/trace/` is included: it must be held to the exact
+  // same isolation guarantees as the rest of the Developer Console.
+  const dirs = [
+    path.join(REPO_ROOT, "src", "console"),
+    path.join(REPO_ROOT, "src", "console", "trace"),
+    path.join(REPO_ROOT, "bin")
+  ];
   const files = [];
   for (const dir of dirs) {
     for (const name of fs.readdirSync(dir)) {

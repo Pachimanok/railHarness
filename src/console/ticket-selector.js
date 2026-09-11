@@ -7,6 +7,8 @@
  * facade's `listReady` / `getTicket` are used here.
  */
 
+import { isUserCancelled } from "./cancellation.js";
+
 const BACK = "__back__";
 
 export const TICKET_SELECTOR_BACK = "back";
@@ -89,8 +91,9 @@ export function formatTicketDetail(detail, project) {
  * `TICKET_SELECTOR_CONTINUE` (redraw the ticket list — the caller loops).
  * Never calls anything but `rail.listReady` / `rail.getTicket`.
  */
-export async function selectTicket({ rail, project, menu, logger }) {
+export async function selectTicket({ rail, project, menu, logger, trace }) {
   const raw = await rail.listReady(project.id);
+  trace?.recordEvent("READY_LIST_VIEWED", { projectId: project.id });
   const tickets = normalizeReadyTickets(raw);
 
   logger("");
@@ -114,10 +117,12 @@ export async function selectTicket({ rail, project, menu, logger }) {
   try {
     choice = await menu({ question: "Tickets READY:", items });
   } catch (err) {
-    if (err?.code === "CANCELLED") return TICKET_SELECTOR_BACK;
+    if (isUserCancelled(err)) return TICKET_SELECTOR_BACK;
     throw err;
   }
   if (choice === BACK) return TICKET_SELECTOR_BACK;
+
+  trace?.recordEvent("TICKET_SELECTED", { projectId: project.id, ticketRef: choice });
 
   let detail;
   try {
@@ -141,5 +146,6 @@ export async function selectTicket({ rail, project, menu, logger }) {
   logger("");
   logger(NEXT_STEP_MESSAGE);
   logger("");
+  trace?.recordEvent("TICKET_DETAIL_VIEWED", { projectId: project.id, ticketRef: choice });
   return TICKET_SELECTOR_CONTINUE;
 }

@@ -7,6 +7,8 @@
  * return.
  */
 
+import { isUserCancelled } from "./cancellation.js";
+
 const BACK = "__back__";
 
 function clean(value) {
@@ -54,9 +56,10 @@ export const NO_PROJECTS_MESSAGE = "No tenés proyectos disponibles en RailSoft.
  * second request. Returns the chosen `{id,label,raw}` project, or `null`
  * when the user picks "Volver" (or there is nothing to choose from).
  */
-export async function selectProject({ rail, menu, logger, onConnected }) {
+export async function selectProject({ rail, menu, logger, onConnected, trace }) {
   const raw = await rail.listProjects();
   onConnected?.();
+  trace?.recordEvent("PROJECT_LIST_VIEWED");
   const projects = sortProjects(normalizeProjects(raw));
 
   if (projects.length === 0) {
@@ -76,8 +79,12 @@ export async function selectProject({ rail, menu, logger, onConnected }) {
   try {
     choice = await menu({ question: "¿Con qué proyecto querés trabajar?", items });
   } catch (err) {
-    if (err?.code === "CANCELLED") return null;
+    if (isUserCancelled(err)) return null;
     throw err;
+  }
+
+  if (choice !== BACK) {
+    trace?.recordEvent("PROJECT_SELECTED", { projectId: choice.id, metadata: { projectName: choice.label } });
   }
 
   return choice === BACK ? null : choice;

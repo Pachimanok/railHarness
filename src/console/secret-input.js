@@ -11,6 +11,8 @@
 
 import readline from "node:readline";
 
+import { UserCancelledError } from "./cancellation.js";
+
 /**
  * Prompt for a secret line. Resolves the raw string typed (may be empty —
  * callers decide whether that's acceptable). Rejects with `{code:
@@ -64,7 +66,7 @@ function promptSecretInteractive({ prompt, input, output }) {
         settled = true;
         cleanup();
         output.write("\n");
-        reject(Object.assign(new Error("Cancelado por el usuario."), { code: "CANCELLED" }));
+        reject(new UserCancelledError());
         return;
       }
       if (key.name === "return" || key.name === "enter") {
@@ -94,7 +96,7 @@ function promptSecretFallback({ prompt, input, output }) {
     rl.question(prompt, answer => {
       rl.close();
       if (answer === null || answer === undefined) {
-        reject(Object.assign(new Error("Cancelado por el usuario."), { code: "CANCELLED" }));
+        reject(new UserCancelledError());
         return;
       }
       resolve(String(answer));

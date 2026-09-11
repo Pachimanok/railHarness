@@ -9,6 +9,8 @@
 
 import readline from "node:readline";
 
+import { UserCancelledError } from "./cancellation.js";
+
 const RESET = "\x1b[0m";
 const DIM = "\x1b[2m";
 const GREEN = "\x1b[32m";
@@ -114,7 +116,7 @@ function selectMenuInteractive({ question, items, input, output }) {
         settled = true;
         cleanup();
         output.write("\n");
-        reject(Object.assign(new Error("Cancelado por el usuario."), { code: "CANCELLED" }));
+        reject(new UserCancelledError());
       }
     };
 
@@ -138,7 +140,7 @@ function selectMenuFallback({ question, items, input, output }) {
       }
       if (answer === null) {
         rl.close();
-        reject(Object.assign(new Error("Cancelado por el usuario."), { code: "CANCELLED" }));
+        reject(new UserCancelledError());
         return;
       }
       output.write("Opción inválida.\n");

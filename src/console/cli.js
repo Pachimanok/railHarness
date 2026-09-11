@@ -1,9 +1,18 @@
 /**
- * Rail Harness Developer Console — CLI entry point (HC-01 + HC-02 + HC-03).
+ * Rail Harness Developer Console — CLI entry point (HC-01 + HC-02 + HC-03 + HC-04).
  *
  * `rail-harness` / `rail-harness doctor` / `rail-harness setup` /
  * `rail-harness projects` / `rail-harness ready <projectId>` /
- * `rail-harness login` / `rail-harness logout` / `rail-harness auth status`.
+ * `rail-harness login` / `rail-harness logout` / `rail-harness auth status` /
+ * `rail-harness trace status` / `rail-harness trace recent`.
+ *
+ * Since HC-04, every invocation creates its own local `HarnessSession`
+ * (`trace/` — `src/console/trace/context.js`'s injectable `trace` facade)
+ * recording WHO ran the console, WHERE, WHEN and WHICH functional screens
+ * were used — never keystrokes, shell commands, stdin, source code or
+ * secrets. Purely local (`~/.local/state/rail-harness/`), best-effort (a
+ * broken trace store degrades to a warning, never blocks the console) and
+ * fully separate from RailSoft — see `docs/HARNESS.md`.
  *
  * Strictly additive and isolated from the Worker Core: this module never
  * imports the Worker Core, Orchestration, Workspace Manager or Adapters
@@ -46,6 +55,9 @@ import { resolveCredentials } from "./credential-resolve.js";
 import { loginCommand, logoutCommand, authStatusCommand } from "./auth.js";
 import { selectProject, normalizeProjects, sortProjects } from "./project-selector.js";
 import { selectTicket, normalizeReadyTickets, TICKET_SELECTOR_BACK } from "./ticket-selector.js";
+import { createTrace } from "./trace/context.js";
+import { traceStatusCommand, traceRecentCommand } from "./trace/commands.js";
+import { isUserCancelled } from "./cancellation.js";
 
 // Kept for backward compatibility (HC-01/HC-02): the HC-03 interactive main
 // menu is now auth-aware and picks between `AUTHENTICATED_MENU_ITEMS` /
@@ -136,22 +148,24 @@ function runDoctor({ env, osModule, runGit, runClaude, homeDir }) {
   return runDoctorChecks({ env, osModule, runGit, runClaude, homeDir });
 }
 
-async function doctorCommand({ logger, env, osModule, runGit, runClaude, homeDir, output, rail }) {
+async function doctorCommand({ logger, env, osModule, runGit, runClaude, homeDir, output, rail, trace }) {
   const identity = getIdentity({ osModule, env });
   const checks = runDoctor({ env, osModule, runGit, runClaude, homeDir });
   const credentialCheck = runCredentialCheck({ env, homeDir });
   const identityChecks = await runRailIdentityChecks({ env, homeDir, rail });
   printDoctorReport(logger, checks, identity, !!output?.isTTY, [credentialCheck, ...identityChecks]);
+  trace?.recordEvent("DOCTOR_RUN", { metadata: { result: doctorExitCode(checks) === 0 ? "OK" : "FAILED" } });
   return doctorExitCode(checks);
 }
 
-async function setupCommand({ logger, env, osModule, runGit, runClaude, homeDir, output }) {
+async function setupCommand({ logger, env, osModule, runGit, runClaude, homeDir, output, trace }) {
   const dir = homeDir || env.HOME || osModule.homedir?.();
   let result;
   try {
     result = ensureConfig(dir);
   } catch (err) {
     logger(`✗ No se pudo preparar la configuración local: ${err.message}`);
+    trace?.recordEvent("COMMAND_FAILED", { metadata: { command: "setup", reasonCode: "CONFIG_ERROR" } });
     return 1;
   }
 
@@ -164,6 +178,7 @@ async function setupCommand({ logger, env, osModule, runGit, runClaude, homeDir,
 
   const checks = runDoctor({ env, osModule, runGit, runClaude, homeDir: dir });
   printCondensed(logger, checks, !!output?.isTTY);
+  trace?.recordEvent("SETUP_RUN", { metadata: { result: result.created ? "CREATED" : "EXISTING" } });
   return 0;
 }
 
@@ -175,7 +190,7 @@ async function setupCommand({ logger, env, osModule, runGit, runClaude, homeDir,
  * the Worker. `rail`, when given, overrides the facade built from `env`
  * (tests inject a fake so this never touches the network).
  */
-async function startCommand({ logger, env, osModule, runGit, runClaude, homeDir, menu, output, rail }) {
+async function startCommand({ logger, env, osModule, runGit, runClaude, homeDir, menu, output, rail, trace }) {
   const isTTY = !!output?.isTTY;
   logger("");
 
@@ -205,6 +220,7 @@ async function startCommand({ logger, env, osModule, runGit, runClaude, homeDir,
         rail: activeRail,
         menu,
         logger,
+        trace,
         onConnected: () => logger(formatCheckLine({ label: "RailSoft conectado", ok: true }, { isTTY }))
       });
     } catch (err) {
@@ -218,7 +234,7 @@ async function startCommand({ logger, env, osModule, runGit, runClaude, homeDir,
     if (!project) return; // "Volver" al menú principal (o sin proyectos disponibles)
 
     for (;;) {
-      const outcome = await selectTicket({ rail: activeRail, project, menu, logger });
+      const outcome = await selectTicket({ rail: activeRail, project, menu, logger, trace });
       if (outcome === TICKET_SELECTOR_BACK) break;
     }
   }
@@ -227,7 +243,7 @@ async function startCommand({ logger, env, osModule, runGit, runClaude, homeDir,
 /**
  * `rail-harness projects` — read-only, lists accessible projects and exits.
  */
-async function projectsCommand({ logger, env, rail, homeDir }) {
+async function projectsCommand({ logger, env, rail, homeDir, trace }) {
   const { rail: activeRail, error: railError } = resolveRail({ env, rail, homeDir });
   if (railError) {
     logger(railError);
@@ -243,8 +259,10 @@ async function projectsCommand({ logger, env, rail, homeDir }) {
     raw = await activeRail.listProjects();
   } catch (err) {
     logger(`No se pudo conectar a RailSoft (${err.message}).`);
+    trace?.recordEvent("COMMAND_FAILED", { metadata: { command: "projects", reasonCode: "RAIL_UNREACHABLE" } });
     return 1;
   }
+  trace?.recordEvent("PROJECT_LIST_VIEWED");
 
   const projects = sortProjects(normalizeProjects(raw));
   if (projects.length === 0) {
@@ -261,7 +279,7 @@ async function projectsCommand({ logger, env, rail, homeDir }) {
  * `rail-harness ready <projectId>` — read-only, lists READY tickets for a
  * project and exits.
  */
-async function readyCommand({ logger, env, rail, projectId, homeDir }) {
+async function readyCommand({ logger, env, rail, projectId, homeDir, trace }) {
   if (!projectId) {
     logger("Uso: rail-harness ready <projectId>");
     return 1;
@@ -282,8 +300,10 @@ async function readyCommand({ logger, env, rail, projectId, homeDir }) {
     raw = await activeRail.listReady(projectId);
   } catch (err) {
     logger(`No se pudo conectar a RailSoft (${err.message}).`);
+    trace?.recordEvent("COMMAND_FAILED", { metadata: { command: "ready", reasonCode: "RAIL_UNREACHABLE" } });
     return 1;
   }
+  trace?.recordEvent("READY_LIST_VIEWED", { projectId });
 
   const tickets = normalizeReadyTickets(raw);
   if (tickets.length === 0) {
@@ -296,7 +316,7 @@ async function readyCommand({ logger, env, rail, projectId, homeDir }) {
   return 0;
 }
 
-async function mainMenuLoop({ logger, env, osModule, runGit, runClaude, homeDir, menu, output, rail, readSecret }) {
+async function mainMenuLoop({ logger, env, osModule, runGit, runClaude, homeDir, menu, output, rail, readSecret, trace }) {
   const identity = getIdentity({ osModule, env });
   printBanner(logger, identity);
 
@@ -315,45 +335,54 @@ async function mainMenuLoop({ logger, env, osModule, runGit, runClaude, homeDir,
     try {
       choice = await menu({ question: "¿Qué querés hacer?", items });
     } catch (err) {
-      if (err?.code === "CANCELLED") {
+      if (isUserCancelled(err)) {
         logger("Cancelado.");
+        trace?.abort();
         return 0;
       }
       throw err;
     }
 
     if (choice === "start") {
-      await startCommand({ logger, env, osModule, runGit, runClaude, homeDir, menu, output, rail });
+      await startCommand({ logger, env, osModule, runGit, runClaude, homeDir, menu, output, rail, trace });
       logger("");
       continue;
     }
     if (choice === "projects") {
       logger("");
-      await projectsCommand({ logger, env, rail, homeDir });
+      await projectsCommand({ logger, env, rail, homeDir, trace });
       logger("");
       continue;
     }
     if (choice === "setup") {
       logger("");
-      await setupCommand({ logger, env, osModule, runGit, runClaude, homeDir, output });
+      await setupCommand({ logger, env, osModule, runGit, runClaude, homeDir, output, trace });
       logger("");
       continue;
     }
     if (choice === "doctor") {
       logger("");
-      await doctorCommand({ logger, env, osModule, runGit, runClaude, homeDir, output, rail });
+      await doctorCommand({ logger, env, osModule, runGit, runClaude, homeDir, output, rail, trace });
       logger("");
       continue;
     }
     if (choice === "login") {
       logger("");
-      await loginCommand({ logger, env, homeDir, osModule, output, readSecret, rail });
+      try {
+        await loginCommand({ logger, env, homeDir, osModule, output, readSecret, rail, trace });
+      } catch (err) {
+        // A cancelled token entry only cancels THIS sub-step (loginCommand
+        // already logged "Cancelado.") — the interactive session itself
+        // keeps running, so it must NOT end the HarnessSession. Compare
+        // with the top-level `menu()` cancel above, which IS terminal.
+        if (!isUserCancelled(err)) throw err;
+      }
       logger("");
       continue;
     }
     if (choice === "logout") {
       logger("");
-      logoutCommand({ logger, homeDir });
+      logoutCommand({ logger, homeDir, trace });
       logger("");
       continue;
     }
@@ -364,9 +393,94 @@ async function mainMenuLoop({ logger, env, osModule, runGit, runClaude, homeDir,
   }
 }
 
+async function dispatch({
+  argv,
+  env,
+  logger,
+  input,
+  output,
+  osModule,
+  homeDir,
+  runGit,
+  runClaude,
+  rail,
+  readSecret,
+  menu,
+  trace
+}) {
+  const [command, ...rest] = argv;
+
+  if (command === "doctor") {
+    return doctorCommand({ logger, env, osModule, runGit, runClaude, homeDir, output, rail, trace });
+  }
+  if (command === "setup") {
+    return setupCommand({ logger, env, osModule, runGit, runClaude, homeDir, output, trace });
+  }
+  if (command === "projects") {
+    if (rest.length > 0) {
+      logger(`Argumentos inesperados: ${rest.join(" ")}`);
+      return 1;
+    }
+    return projectsCommand({ logger, env, rail, homeDir, trace });
+  }
+  if (command === "ready") {
+    return readyCommand({ logger, env, rail, projectId: rest[0], homeDir, trace });
+  }
+  if (command === "login") {
+    if (rest.length > 0) {
+      logger(`Argumentos inesperados: ${rest.join(" ")}`);
+      return 1;
+    }
+    return loginCommand({ logger, env, homeDir, osModule, input, output, readSecret, rail, trace });
+  }
+  if (command === "logout") {
+    if (rest.length > 0) {
+      logger(`Argumentos inesperados: ${rest.join(" ")}`);
+      return 1;
+    }
+    return logoutCommand({ logger, homeDir, trace });
+  }
+  if (command === "auth") {
+    if (rest.length !== 1 || rest[0] !== "status") {
+      logger("Uso: rail-harness auth status");
+      return 1;
+    }
+    return authStatusCommand({ logger, env, homeDir, osModule, rail, trace });
+  }
+  if (command === "trace") {
+    if (rest.length !== 1 || (rest[0] !== "status" && rest[0] !== "recent")) {
+      logger("Uso: rail-harness trace [status|recent]");
+      return 1;
+    }
+    return rest[0] === "status"
+      ? traceStatusCommand({ logger, homeDir, env, osModule })
+      : traceRecentCommand({ logger, homeDir, env, osModule });
+  }
+  if (command) {
+    logger(`Comando desconocido: "${command}".`);
+    logger("Uso: rail-harness [doctor|setup|projects|ready <projectId>|login|logout|auth status|trace status|trace recent]");
+    return 1;
+  }
+  if (rest.length > 0) {
+    logger(`Argumentos inesperados: ${rest.join(" ")}`);
+    return 1;
+  }
+
+  return mainMenuLoop({ logger, env, osModule, runGit, runClaude, homeDir, menu, output, rail, readSecret, trace });
+}
+
 /**
  * Run the Developer Console. Returns a numeric exit code, never calls
- * `process.exit` itself (that's `bin/rail-harness.js`'s job).
+ * `process.exit` itself (that's `bin/rail-harness.js`'s job) — EXCEPT for a
+ * genuine process-level `SIGINT` (Ctrl+C outside of the interactive menu's
+ * own raw-mode key handling, e.g. while a network request is in flight),
+ * where exiting immediately is the correct, expected CLI behavior; the
+ * trace is marked `ABORTED` first, best-effort, before exiting.
+ *
+ * HC-04: every invocation gets its own `HarnessSession` (`trace`, injectable
+ * for tests — never depends on the real HOME/filesystem when injected).
+ * Trace failures are caught here and NEVER propagate — a broken local trace
+ * store must never block the console (see `trace/context.js`).
  */
 export async function runCli({
   argv = process.argv.slice(2),
@@ -380,56 +494,53 @@ export async function runCli({
   runClaude,
   rail,
   readSecret,
-  menu = opts => selectMenu({ ...opts, input, output })
+  menu = opts => selectMenu({ ...opts, input, output }),
+  trace = createTrace({ homeDir, env, osModule, onWarning: logger }),
+  processExit = code => process.exit(code)
 } = {}) {
-  const [command, ...rest] = argv;
+  trace.start();
 
-  if (command === "doctor") {
-    return doctorCommand({ logger, env, osModule, runGit, runClaude, homeDir, output, rail });
-  }
-  if (command === "setup") {
-    return setupCommand({ logger, env, osModule, runGit, runClaude, homeDir, output });
-  }
-  if (command === "projects") {
-    if (rest.length > 0) {
-      logger(`Argumentos inesperados: ${rest.join(" ")}`);
-      return 1;
+  const onSigint = () => {
+    try {
+      trace.abort();
+    } finally {
+      processExit(130);
     }
-    return projectsCommand({ logger, env, rail, homeDir });
-  }
-  if (command === "ready") {
-    return readyCommand({ logger, env, rail, projectId: rest[0], homeDir });
-  }
-  if (command === "login") {
-    if (rest.length > 0) {
-      logger(`Argumentos inesperados: ${rest.join(" ")}`);
-      return 1;
-    }
-    return loginCommand({ logger, env, homeDir, osModule, input, output, readSecret, rail });
-  }
-  if (command === "logout") {
-    if (rest.length > 0) {
-      logger(`Argumentos inesperados: ${rest.join(" ")}`);
-      return 1;
-    }
-    return logoutCommand({ logger, homeDir });
-  }
-  if (command === "auth") {
-    if (rest.length !== 1 || rest[0] !== "status") {
-      logger("Uso: rail-harness auth status");
-      return 1;
-    }
-    return authStatusCommand({ logger, env, homeDir, osModule, rail });
-  }
-  if (command) {
-    logger(`Comando desconocido: "${command}".`);
-    logger("Uso: rail-harness [doctor|setup|projects|ready <projectId>|login|logout|auth status]");
-    return 1;
-  }
-  if (rest.length > 0) {
-    logger(`Argumentos inesperados: ${rest.join(" ")}`);
-    return 1;
-  }
+  };
+  process.once("SIGINT", onSigint);
 
-  return mainMenuLoop({ logger, env, osModule, runGit, runClaude, homeDir, menu, output, rail, readSecret });
+  try {
+    const exitCode = await dispatch({
+      argv,
+      env,
+      logger,
+      input,
+      output,
+      osModule,
+      homeDir,
+      runGit,
+      runClaude,
+      rail,
+      readSecret,
+      menu,
+      trace
+    });
+    trace.complete();
+    return exitCode;
+  } catch (err) {
+    if (isUserCancelled(err)) {
+      // A cancellation that reaches all the way here (e.g. `rail-harness
+      // login` standalone, cancelled while reading the token) IS terminal
+      // for this invocation — end the session as ABORTED, not FAILED, and
+      // resolve with a plain exit code instead of rethrowing (a user
+      // cancellation is not the "error fatal" `bin/rail-harness.js` prints
+      // for a genuinely unexpected exception).
+      trace.abort();
+      return 1;
+    }
+    trace.fail();
+    throw err;
+  } finally {
+    process.removeListener("SIGINT", onSigint);
+  }
 }

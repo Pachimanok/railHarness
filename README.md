@@ -85,8 +85,9 @@ mutated), `1` (otherwise).
 ## Developer Console
 
 `src/console/` — an interactive terminal UI for developers, added by HC-01
-(Paso 1), extended by HC-02 (Paso 2, read-only Rail) and HC-03 (Paso 3,
-personal developer identity/credentials). Fully additive: it still lives
+(Paso 1), extended by HC-02 (Paso 2, read-only Rail), HC-03 (Paso 3, personal
+developer identity/credentials) and HC-04 (Paso 4, local human traceability —
+see below). Fully additive: it still lives
 outside `src/worker/`, `src/orchestration/`, `src/workspace/` and
 `src/adapters/`, and never runs `npm run worker`. Since HC-02 it **does**
 talk to RailSoft, but **strictly read-only**: `src/console/rail-readonly.js`
@@ -108,6 +109,8 @@ rail-harness doctor
 rail-harness setup
 rail-harness projects            # read-only: list accessible projects, then exit
 rail-harness ready <projectId>   # read-only: list that project's READY tickets, then exit
+rail-harness trace status        # local-only: local traceability summary
+rail-harness trace recent        # local-only: last 10 recorded sessions
 ```
 
 - `rail-harness` — boxed banner, auto-detected Linux user / hostname, a
@@ -176,6 +179,93 @@ that no console/bin file can ever produce a Rail mutation (no `POST`/`PATCH`/
 Zero new npm dependencies (raw-mode `readline` keypress navigation for both
 menu selection and hidden token input, with a line-based fallback when there
 is no TTY).
+
+### Trazabilidad local (HC-04)
+
+`src/console/trace/` gives every `rail-harness` invocation (interactive or a
+single subcommand) its own local **HarnessSession**, so it's possible to know
+who ran the console, on which machine, when, which project/ticket they
+looked at, and whether the session ended normally, with a controlled error,
+or was cancelled — without ever recording keystrokes, shell commands, stdin,
+prompts, source code or secrets. Fully additive and best-effort: it never
+touches Worker Core / Orchestration / Workspace / AdapterRouter / claim /
+resume / recover, and a broken trace store degrades to a single safe warning
+("Advertencia: no se pudo registrar la trazabilidad local.") — it never
+blocks login, doctor, projects, ready or navigation.
+
+```bash
+rail-harness trace status
+# Rail Harness Trace
+#
+# ✓ Trazabilidad local habilitada
+# Sesiones registradas: 12
+# Eventos registrados: 84
+# Última sesión: rhs_1f9b6e2a-...
+
+rail-harness trace recent
+# Rail Harness Trace — sesiones recientes
+#
+# Fecha        Usuario   Máquina          Estado
+# 2026-09-11   fran      harness-prod-01  COMPLETED
+# 2026-09-10   fran      harness-prod-01  ABORTED
+```
+
+Both commands are **100% local** — they never contact RailSoft and never
+issue a `fetch`.
+
+Stored under `~/.local/state/rail-harness/` (deliberately separate from the
+non-secret `~/.config/rail-harness/` used by `config-store.js` /
+`credential-store.js`):
+
+```
+~/.local/state/rail-harness/
+  sessions/rhs_<uuid>.json
+  events/<YYYY-MM-DD>.jsonl
+```
+
+Directories are forced to `0700`, files to `0600`, session writes are atomic
+(temp file + rename), event appends never follow a symlink at the target
+path, and a corrupt past session/event line is silently skipped on read — it
+never prevents starting a new session.
+
+Every store path is derived from the effective `HOME` (injected/resolved per
+call — see `store.js`'s `homeDir` parameter), never from a shared or
+hardcoded location: `/home/fran/.local/state/rail-harness/` and
+`/home/uri/.local/state/rail-harness/` are completely independent stores,
+and nothing in `trace/` ever enumerates `/home/*` or a sibling account's
+directory. Two different Linux users therefore never see each other's
+sessions — see `test/console-trace-isolation.test.mjs` for the explicit
+`HOME_A` / `HOME_B` regression coverage. (The only way to share trace data is
+for two humans to literally share one Linux account/`HOME` — an existing,
+out-of-scope condition identical to HC-03's credential store, not a defect
+introduced by HC-04.)
+
+What **is** recorded: the detected Linux user and hostname, a `sshSession`
+boolean (derived only from the *presence* of `SSH_CONNECTION` /
+`SSH_CLIENT` / `SSH_TTY` — never their value, so no IP is ever stored), the
+session's start/end timestamps and terminal status (`ACTIVE` → `COMPLETED` /
+`FAILED` / `ABORTED`), the selected project/ticket, and a closed set of
+functional events (`SESSION_STARTED`, `PROJECT_LIST_VIEWED`,
+`PROJECT_SELECTED`, `READY_LIST_VIEWED`, `TICKET_SELECTED`,
+`TICKET_DETAIL_VIEWED`, `DOCTOR_RUN`, `SETUP_RUN`, `LOGIN_SUCCEEDED`/
+`LOGIN_FAILED`, `LOGOUT`, `AUTH_STATUS_CHECKED`, `COMMAND_FAILED`,
+`SESSION_COMPLETED`/`FAILED`/`ABORTED` — the full enum lives in
+`src/console/trace/event.js`).
+
+What is **never** recorded: shell commands, keystrokes, stdin/stdout
+transcripts, file contents, diffs, source code, prompts, or any secret —
+`metadata` is restricted to an explicit allowlist (`projectName`,
+`projectId`, `ticketRef`, `ticketTitle`, `command`, `result`, `count`,
+`reasonCode`) and is recursively stripped of anything matching
+`SECRET_KEY_RE` (`src/security/sanitize.js`), with every string value also
+passed through `redactSecrets` as defense in depth — `RAIL_TOKEN` can never
+end up in a `HarnessEvent`/`HarnessSession`. This is flow measurement, not
+productivity tracking: no rankings, velocity, cycle time or performance
+scores are computed (deferred, out of HC-04 scope).
+
+The console depends on an injectable `trace` object (`createTrace` in
+`src/console/trace/context.js`) so tests never touch the real `HOME` or
+filesystem.
 
 ## Configuration
 

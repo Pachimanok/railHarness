@@ -19,6 +19,7 @@ import { writeCredentialsAtomic, deleteCredentials } from "./credential-store.js
 import { resolveCredentials } from "./credential-resolve.js";
 import { normalizeProjects } from "./project-selector.js";
 import { promptSecret } from "./secret-input.js";
+import { isUserCancelled } from "./cancellation.js";
 
 function clean(value) {
   const v = (value ?? "").toString().trim();
@@ -45,7 +46,8 @@ export async function loginCommand({
   input,
   output,
   readSecret,
-  rail
+  rail,
+  trace
 } = {}) {
   const identity = getIdentity({ osModule, env });
 
@@ -69,9 +71,14 @@ export async function loginCommand({
   try {
     rawToken = await read();
   } catch (err) {
-    if (err?.code === "CANCELLED") {
+    if (isUserCancelled(err)) {
       logger("Cancelado.");
-      return 1;
+      trace?.recordEvent("LOGIN_FAILED", { metadata: { reasonCode: "CANCELLED" } });
+      // Propagated (not swallowed into a plain exit code) so the CALLER can
+      // tell "the user explicitly cancelled" apart from any other 1-exit
+      // outcome: `runCli` (standalone `rail-harness login`) ends the
+      // HarnessSession as ABORTED; the interactive main menu catches this
+      // locally and just returns to the menu — see `cli.js`.
     }
     throw err;
   }
@@ -80,6 +87,7 @@ export async function loginCommand({
   if (!token) {
     logger("");
     logger("El token no puede estar vacío.");
+    trace?.recordEvent("LOGIN_FAILED", { metadata: { reasonCode: "EMPTY_TOKEN" } });
     return 1;
   }
 
@@ -90,6 +98,7 @@ export async function loginCommand({
     } catch {
       logger("");
       logger(RAIL_INSECURE_URL_MESSAGE);
+      trace?.recordEvent("LOGIN_FAILED", { metadata: { reasonCode: "INSECURE_URL" } });
       return 1;
     }
   }
@@ -105,8 +114,10 @@ export async function loginCommand({
     logger("");
     if (err?.status === 401 || err?.status === 403) {
       logger("Credencial rechazada por RailSoft.");
+      trace?.recordEvent("LOGIN_FAILED", { metadata: { reasonCode: "REJECTED" } });
     } else {
       logger("No se pudo conectar con RailSoft.");
+      trace?.recordEvent("LOGIN_FAILED", { metadata: { reasonCode: "UNREACHABLE" } });
     }
     return 1;
   }
@@ -120,6 +131,7 @@ export async function loginCommand({
   logger(`✓ ${pluralize(projects.length, "proyecto")} disponible${projects.length === 1 ? "" : "s"}`);
   logger("");
   logger("Sesión configurada correctamente.");
+  trace?.recordEvent("LOGIN_SUCCEEDED");
   return 0;
 }
 
@@ -128,9 +140,10 @@ export async function loginCommand({
  * never touches `config.json`, never contacts RailSoft (no server-side
  * revocation — see HARNESS docs for the deferred scope).
  */
-export function logoutCommand({ logger, homeDir } = {}) {
+export function logoutCommand({ logger, homeDir, trace } = {}) {
   const deleted = deleteCredentials(homeDir);
   logger(deleted ? "Credencial local eliminada." : "No había una credencial local configurada.");
+  trace?.recordEvent("LOGOUT");
   return 0;
 }
 
@@ -139,7 +152,7 @@ export function logoutCommand({ logger, homeDir } = {}) {
  * tests only. Never prints the token; only reports where it came from
  * (`environment` / `credencial local`).
  */
-export async function authStatusCommand({ logger, env = process.env, homeDir, osModule = os, rail } = {}) {
+export async function authStatusCommand({ logger, env = process.env, homeDir, osModule = os, rail, trace } = {}) {
   const identity = getIdentity({ osModule, env });
 
   logger("Rail Harness Auth");
@@ -153,6 +166,7 @@ export async function authStatusCommand({ logger, env = process.env, homeDir, os
     logger("✗ Credencial local encontrada");
     logger("");
     logger("RailSoft: no autenticado");
+    trace?.recordEvent("AUTH_STATUS_CHECKED", { metadata: { result: "NO_CREDENTIAL" } });
     return 1;
   }
   logger("✓ Credencial local encontrada");
@@ -162,12 +176,14 @@ export async function authStatusCommand({ logger, env = process.env, homeDir, os
   if (!activeRail) {
     if (!apiUrl) {
       logger("✗ RailSoft conectado — RAIL_API_URL no configurada");
+      trace?.recordEvent("AUTH_STATUS_CHECKED", { metadata: { result: "NO_API_URL" } });
       return 1;
     }
     try {
       activeRail = createReadonlyRail({ apiUrl, token });
     } catch {
       logger(`✗ RailSoft conectado — ${RAIL_INSECURE_URL_MESSAGE}`);
+      trace?.recordEvent("AUTH_STATUS_CHECKED", { metadata: { result: "INSECURE_URL" } });
       return 1;
     }
   }
@@ -178,6 +194,7 @@ export async function authStatusCommand({ logger, env = process.env, homeDir, os
     const reachedServer = typeof err?.status === "number";
     logger(reachedServer ? "✓ RailSoft conectado" : "✗ RailSoft conectado");
     logger("✗ Credencial autorizada");
+    trace?.recordEvent("AUTH_STATUS_CHECKED", { metadata: { result: "REJECTED" } });
     return 1;
   }
 
@@ -185,5 +202,6 @@ export async function authStatusCommand({ logger, env = process.env, homeDir, os
   logger("✓ Credencial autorizada");
   logger("");
   logger(`Fuente: ${source}`);
+  trace?.recordEvent("AUTH_STATUS_CHECKED", { metadata: { result: "OK" } });
   return 0;
 }
