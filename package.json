@@ -7,6 +7,9 @@
   "engines": {
     "node": ">=18"
   },
+  "bin": {
+    "rail-harness": "./bin/rail-harness.js"
+  },
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "validate": "node --test test/*.test.mjs",

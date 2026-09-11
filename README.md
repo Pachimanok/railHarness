@@ -82,6 +82,36 @@ exactly once. Optional `RAIL_RESUME_NOTES` / `RAIL_RECOVER_NOTES` → the
 `reason`. Exit `0` (new Run `COMPLETED`), `2` (fail-closed no-op, nothing
 mutated), `1` (otherwise).
 
+## Developer Console
+
+`src/console/` — an interactive terminal UI for developers, added by HC-01
+(Paso 1). Fully additive: it lives outside `src/worker/`, `src/orchestration/`,
+`src/workspace/`, `src/rail/` and `src/adapters/`, never opens a network
+connection, and never runs `npm run worker`. **HC-01 no conecta todavía con
+RailSoft ni inicia el Worker.**
+
+```bash
+npm link          # exposes the `rail-harness` binary globally
+rail-harness       # opens the interactive main menu
+rail-harness doctor
+rail-harness setup
+```
+
+- `rail-harness` — boxed banner, auto-detected Linux user / hostname, a
+  condensed environment check, and an arrow-key menu (`Empezar a trabajar` /
+  `Configurar entorno` / `Doctor` / `Salir`). "Empezar a trabajar" only
+  prints a placeholder message — project selection is a later step.
+- `rail-harness doctor` — runs the 6 local checks (Node version vs.
+  `engines.node`, Git, Claude Code, `HOME`, `~/.config/rail-harness`
+  accessible, writable) and exits non-zero if any fails. No RailSoft check
+  yet.
+- `rail-harness setup` — creates/verifies `~/.config/rail-harness/config.json`
+  (`{ "version": 1 }`, never a token/secret) and prints the environment
+  status.
+
+Zero new npm dependencies (raw-mode `readline` keypress navigation, with a
+line-based numeric fallback when there is no TTY).
+
 ## Configuration
 
 Copy `.env.example` to `.env` and fill it in. Required: `RAIL_API_URL`,
