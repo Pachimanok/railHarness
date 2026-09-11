@@ -1,8 +1,9 @@
 /**
- * Rail Harness Developer Console — CLI entry point (HC-01 + HC-02).
+ * Rail Harness Developer Console — CLI entry point (HC-01 + HC-02 + HC-03).
  *
  * `rail-harness` / `rail-harness doctor` / `rail-harness setup` /
- * `rail-harness projects` / `rail-harness ready <projectId>`.
+ * `rail-harness projects` / `rail-harness ready <projectId>` /
+ * `rail-harness login` / `rail-harness logout` / `rail-harness auth status`.
  *
  * Strictly additive and isolated from the Worker Core: this module never
  * imports the Worker Core, Orchestration, Workspace Manager or Adapters
@@ -13,10 +14,18 @@
  * projects and READY tickets and inspect one; it NEVER claims a ticket and
  * NEVER starts the Worker — see `docs/HARNESS.md`.
  *
+ * Since HC-03, the Rail token itself may come from `env.RAIL_TOKEN` (HC-02,
+ * unchanged) OR from the developer's own locally stored personal credential
+ * (`rail-harness login` — `credential-store.js`, resolved by
+ * `credential-resolve.js`); `env.RAIL_TOKEN` always wins when present. The
+ * interactive main menu reflects this: unauthenticated shows "Iniciar
+ * sesión", authenticated shows "Empezar a trabajar" / "Proyectos" /
+ * "Cerrar sesión".
+ *
  * Everything that touches the outside world (`logger`, `menu`, `env`,
- * `homeDir`, `rail`, doctor's `runGit` / `runClaude`) is injectable so tests
- * never block on real stdin/network or depend on real binaries / the real
- * HOME.
+ * `homeDir`, `rail`, `readSecret`, doctor's `runGit` / `runClaude`) is
+ * injectable so tests never block on real stdin/network or depend on real
+ * binaries / the real HOME.
  */
 
 import os from "node:os";
@@ -24,19 +33,41 @@ import os from "node:os";
 import { renderBanner, selectMenu, formatCheckLine } from "./ui.js";
 import {
   runDoctorChecks,
-  runRailChecks,
+  runCredentialCheck,
+  runRailIdentityChecks,
   getIdentity,
   doctorPassCount,
   doctorExitCode,
   condensedChecks
 } from "./doctor.js";
 import { ensureConfig, configFilePathFor } from "./config-store.js";
-import { buildReadonlyRailFromEnv } from "./rail-readonly.js";
+import { buildReadonlyRailFromCredentials } from "./rail-readonly.js";
+import { resolveCredentials } from "./credential-resolve.js";
+import { loginCommand, logoutCommand, authStatusCommand } from "./auth.js";
 import { selectProject, normalizeProjects, sortProjects } from "./project-selector.js";
 import { selectTicket, normalizeReadyTickets, TICKET_SELECTOR_BACK } from "./ticket-selector.js";
 
+// Kept for backward compatibility (HC-01/HC-02): the HC-03 interactive main
+// menu is now auth-aware and picks between `AUTHENTICATED_MENU_ITEMS` /
+// `UNAUTHENTICATED_MENU_ITEMS` below instead of this fixed list.
 export const MENU_ITEMS = Object.freeze([
   { label: "Empezar a trabajar", value: "start" },
+  { label: "Configurar entorno", value: "setup" },
+  { label: "Doctor", value: "doctor" },
+  { label: "Salir", value: "exit" }
+]);
+
+const AUTHENTICATED_MENU_ITEMS = Object.freeze([
+  { label: "Empezar a trabajar", value: "start" },
+  { label: "Proyectos", value: "projects" },
+  { label: "Configurar entorno", value: "setup" },
+  { label: "Doctor", value: "doctor" },
+  { label: "Cerrar sesión", value: "logout" },
+  { label: "Salir", value: "exit" }
+]);
+
+const UNAUTHENTICATED_MENU_ITEMS = Object.freeze([
+  { label: "Iniciar sesión", value: "login" },
   { label: "Configurar entorno", value: "setup" },
   { label: "Doctor", value: "doctor" },
   { label: "Salir", value: "exit" }
@@ -51,12 +82,14 @@ const RAIL_NOT_CONFIGURED_LINES = Object.freeze([
 
 /**
  * Resolve `{ rail, error }` for a command: an explicitly injected `rail`
- * (tests) wins outright; otherwise it's built from `env`, validating
- * `RAIL_API_URL` (HTTPS, or HTTP only for `localhost`) BEFORE any request is
- * possible — see `rail-readonly.js`'s `buildReadonlyRailFromEnv`.
+ * (tests) wins outright; otherwise it's built from the HC-03 credential
+ * precedence (`env.RAIL_TOKEN` → locally stored personal token) plus
+ * `env.RAIL_API_URL`, validating it (HTTPS, or HTTP only for `localhost`)
+ * BEFORE any request is possible — see `rail-readonly.js`'s
+ * `buildReadonlyRailFromCredentials`.
  */
-function resolveRail({ env, rail }) {
-  return rail ? { rail, error: null } : buildReadonlyRailFromEnv(env);
+function resolveRail({ env, rail, homeDir }) {
+  return rail ? { rail, error: null } : buildReadonlyRailFromCredentials({ env, homeDir });
 }
 
 function printBanner(logger, identity) {
@@ -106,8 +139,9 @@ function runDoctor({ env, osModule, runGit, runClaude, homeDir }) {
 async function doctorCommand({ logger, env, osModule, runGit, runClaude, homeDir, output, rail }) {
   const identity = getIdentity({ osModule, env });
   const checks = runDoctor({ env, osModule, runGit, runClaude, homeDir });
-  const railChecks = await runRailChecks({ env, rail });
-  printDoctorReport(logger, checks, identity, !!output?.isTTY, railChecks);
+  const credentialCheck = runCredentialCheck({ env, homeDir });
+  const identityChecks = await runRailIdentityChecks({ env, homeDir, rail });
+  printDoctorReport(logger, checks, identity, !!output?.isTTY, [credentialCheck, ...identityChecks]);
   return doctorExitCode(checks);
 }
 
@@ -148,7 +182,7 @@ async function startCommand({ logger, env, osModule, runGit, runClaude, homeDir,
   const localChecks = runDoctor({ env, osModule, runGit, runClaude, homeDir });
   logger(formatCheckLine({ label: "Entorno local", ok: localChecks.every(c => c.ok) }, { isTTY }));
 
-  const { rail: activeRail, error: railError } = resolveRail({ env, rail });
+  const { rail: activeRail, error: railError } = resolveRail({ env, rail, homeDir });
   if (railError) {
     logger(formatCheckLine({ label: "RailSoft conectado", ok: false }, { isTTY }));
     logger("");
@@ -193,8 +227,8 @@ async function startCommand({ logger, env, osModule, runGit, runClaude, homeDir,
 /**
  * `rail-harness projects` — read-only, lists accessible projects and exits.
  */
-async function projectsCommand({ logger, env, rail }) {
-  const { rail: activeRail, error: railError } = resolveRail({ env, rail });
+async function projectsCommand({ logger, env, rail, homeDir }) {
+  const { rail: activeRail, error: railError } = resolveRail({ env, rail, homeDir });
   if (railError) {
     logger(railError);
     return 1;
@@ -227,13 +261,13 @@ async function projectsCommand({ logger, env, rail }) {
  * `rail-harness ready <projectId>` — read-only, lists READY tickets for a
  * project and exits.
  */
-async function readyCommand({ logger, env, rail, projectId }) {
+async function readyCommand({ logger, env, rail, projectId, homeDir }) {
   if (!projectId) {
     logger("Uso: rail-harness ready <projectId>");
     return 1;
   }
 
-  const { rail: activeRail, error: railError } = resolveRail({ env, rail });
+  const { rail: activeRail, error: railError } = resolveRail({ env, rail, homeDir });
   if (railError) {
     logger(railError);
     return 1;
@@ -262,7 +296,7 @@ async function readyCommand({ logger, env, rail, projectId }) {
   return 0;
 }
 
-async function mainMenuLoop({ logger, env, osModule, runGit, runClaude, homeDir, menu, output, rail }) {
+async function mainMenuLoop({ logger, env, osModule, runGit, runClaude, homeDir, menu, output, rail, readSecret }) {
   const identity = getIdentity({ osModule, env });
   printBanner(logger, identity);
 
@@ -270,9 +304,16 @@ async function mainMenuLoop({ logger, env, osModule, runGit, runClaude, homeDir,
   printCondensed(logger, checks, !!output?.isTTY);
 
   for (;;) {
+    const { token } = resolveCredentials({ env, homeDir });
+    const authenticated = !!token;
+    logger(authenticated ? "✓ Credencial personal" : "RailSoft: no autenticado");
+    logger("");
+
+    const items = authenticated ? AUTHENTICATED_MENU_ITEMS : UNAUTHENTICATED_MENU_ITEMS;
+
     let choice;
     try {
-      choice = await menu({ question: "¿Qué querés hacer?", items: MENU_ITEMS });
+      choice = await menu({ question: "¿Qué querés hacer?", items });
     } catch (err) {
       if (err?.code === "CANCELLED") {
         logger("Cancelado.");
@@ -286,6 +327,12 @@ async function mainMenuLoop({ logger, env, osModule, runGit, runClaude, homeDir,
       logger("");
       continue;
     }
+    if (choice === "projects") {
+      logger("");
+      await projectsCommand({ logger, env, rail, homeDir });
+      logger("");
+      continue;
+    }
     if (choice === "setup") {
       logger("");
       await setupCommand({ logger, env, osModule, runGit, runClaude, homeDir, output });
@@ -295,6 +342,18 @@ async function mainMenuLoop({ logger, env, osModule, runGit, runClaude, homeDir,
     if (choice === "doctor") {
       logger("");
       await doctorCommand({ logger, env, osModule, runGit, runClaude, homeDir, output, rail });
+      logger("");
+      continue;
+    }
+    if (choice === "login") {
+      logger("");
+      await loginCommand({ logger, env, homeDir, osModule, output, readSecret, rail });
+      logger("");
+      continue;
+    }
+    if (choice === "logout") {
+      logger("");
+      logoutCommand({ logger, homeDir });
       logger("");
       continue;
     }
@@ -320,6 +379,7 @@ export async function runCli({
   runGit,
   runClaude,
   rail,
+  readSecret,
   menu = opts => selectMenu({ ...opts, input, output })
 } = {}) {
   const [command, ...rest] = argv;
@@ -335,14 +395,35 @@ export async function runCli({
       logger(`Argumentos inesperados: ${rest.join(" ")}`);
       return 1;
     }
-    return projectsCommand({ logger, env, rail });
+    return projectsCommand({ logger, env, rail, homeDir });
   }
   if (command === "ready") {
-    return readyCommand({ logger, env, rail, projectId: rest[0] });
+    return readyCommand({ logger, env, rail, projectId: rest[0], homeDir });
+  }
+  if (command === "login") {
+    if (rest.length > 0) {
+      logger(`Argumentos inesperados: ${rest.join(" ")}`);
+      return 1;
+    }
+    return loginCommand({ logger, env, homeDir, osModule, input, output, readSecret, rail });
+  }
+  if (command === "logout") {
+    if (rest.length > 0) {
+      logger(`Argumentos inesperados: ${rest.join(" ")}`);
+      return 1;
+    }
+    return logoutCommand({ logger, homeDir });
+  }
+  if (command === "auth") {
+    if (rest.length !== 1 || rest[0] !== "status") {
+      logger("Uso: rail-harness auth status");
+      return 1;
+    }
+    return authStatusCommand({ logger, env, homeDir, osModule, rail });
   }
   if (command) {
     logger(`Comando desconocido: "${command}".`);
-    logger("Uso: rail-harness [doctor|setup|projects|ready <projectId>]");
+    logger("Uso: rail-harness [doctor|setup|projects|ready <projectId>|login|logout|auth status]");
     return 1;
   }
   if (rest.length > 0) {
@@ -350,5 +431,5 @@ export async function runCli({
     return 1;
   }
 
-  return mainMenuLoop({ logger, env, osModule, runGit, runClaude, homeDir, menu, output, rail });
+  return mainMenuLoop({ logger, env, osModule, runGit, runClaude, homeDir, menu, output, rail, readSecret });
 }

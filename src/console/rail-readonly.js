@@ -16,9 +16,12 @@
  * `RailApiClient` in any way, it only restricts what the Developer Console
  * can reach.
  *
- * Never logs, never prints `RAIL_TOKEN`. Credentials come from the
- * environment only (`RAIL_API_URL`, `RAIL_TOKEN`, optionally `RAIL_AGENT`,
- * `RAIL_MACHINE`) — HC-02 does not persist or prompt for them.
+ * Never logs, never prints `RAIL_TOKEN`. `RAIL_API_URL` (optionally
+ * `RAIL_AGENT`, `RAIL_MACHINE`) always comes from the environment. The token
+ * itself comes from the environment too via `buildReadonlyRailFromEnv`
+ * (HC-02, unchanged), or — via `buildReadonlyRailFromCredentials` (HC-03) —
+ * from `env.RAIL_TOKEN` falling back to the developer's locally stored
+ * personal credential (`credential-store.js`).
  *
  * `RAIL_API_URL` must satisfy the same secure-transport policy as the Worker
  * Core (`assertSecureRailUrl` from `src/config/runtime-config.js`: HTTPS, or
@@ -29,6 +32,7 @@
 
 import { RailApiClient } from "../rail/rail-api-client.js";
 import { assertSecureRailUrl } from "../config/runtime-config.js";
+import { resolveCredentials } from "./credential-resolve.js";
 
 function clean(value) {
   const v = (value ?? "").toString().trim();
@@ -110,4 +114,40 @@ export function buildReadonlyRailFromEnv(env = process.env) {
   }
 
   return { rail: createReadonlyRail(creds), error: null };
+}
+
+/**
+ * Resolve the read-only Rail facade using the HC-03 credential precedence:
+ * `RAIL_TOKEN` from `env` wins (unchanged HC-02 behaviour), otherwise the
+ * token saved locally by `rail-harness login` (`credential-store.js`, via
+ * `credential-resolve.js`). `RAIL_API_URL` itself is still read from `env`
+ * only — it is not a secret and is shared by every developer on the
+ * machine; only the token is personal. Same never-throws contract as
+ * `buildReadonlyRailFromEnv`:
+ *   - `{ rail: null, error: null, source: null }` — no token at all
+ *     (NOT_AUTHENTICATED) or no `RAIL_API_URL` configured.
+ *   - `{ rail: null, error: <string>, source: null }` — a token is present
+ *     but `RAIL_API_URL` is invalid/insecure; no request is possible.
+ *   - `{ rail: <facade>, error: null, source }` — ready to use; `source` is
+ *     `"environment"` or `"credencial local"`.
+ */
+export function buildReadonlyRailFromCredentials({ env = process.env, homeDir } = {}) {
+  const apiUrl = clean(env.RAIL_API_URL);
+  const { token, source } = resolveCredentials({ env, homeDir });
+
+  if (!apiUrl || !token) return { rail: null, error: null, source: null };
+
+  try {
+    assertSecureRailUrl(apiUrl);
+  } catch {
+    return { rail: null, error: RAIL_INSECURE_URL_MESSAGE, source: null };
+  }
+
+  const creds = {
+    apiUrl,
+    token,
+    agent: clean(env.RAIL_AGENT) || undefined,
+    machine: clean(env.RAIL_MACHINE) || undefined
+  };
+  return { rail: createReadonlyRail(creds), error: null, source };
 }

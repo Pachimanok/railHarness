@@ -16,7 +16,8 @@ import { fileURLToPath } from "node:url";
 
 import { safeEnvironment } from "../security/sanitize.js";
 import { configDirFor, ensureConfigDir } from "./config-store.js";
-import { buildReadonlyRailFromEnv } from "./rail-readonly.js";
+import { buildReadonlyRailFromEnv, buildReadonlyRailFromCredentials } from "./rail-readonly.js";
+import { resolveCredentials } from "./credential-resolve.js";
 
 /** CLI binary name for Claude Code. Kept as a local literal — the Developer
  * Console does not import anything from the adapters layer on purpose. */
@@ -178,6 +179,41 @@ export function doctorExitCode(checks) {
  * `RAIL_TOKEN`. `rail`, when given, overrides the facade built from `env`
  * (tests inject a fake so this never touches the network).
  */
+/**
+ * Shared classification for "we have a read-only Rail facade, try
+ * `listProjects()` and report connectivity + identity". `RailApiClient` sets
+ * `err.status` only when Rail actually answered with a non-2xx HTTP response
+ * — that means the server WAS reachable (so connectivity is fine, it's the
+ * token that's rejected). No `err.status` means the request itself failed
+ * (DNS/TCP/TLS) — connectivity is down. Never prints a secret.
+ */
+async function classifyRailFacet(activeRail) {
+  try {
+    await activeRail.listProjects();
+    return [
+      { id: "railConnectivity", label: "RailSoft", ok: true, detail: null },
+      { id: "railIdentity", label: "Identidad Rail autorizada", ok: true, detail: null }
+    ];
+  } catch (err) {
+    const reachedServer = typeof err.status === "number";
+    const authFailed = err.status === 401 || err.status === 403;
+    return [
+      {
+        id: "railConnectivity",
+        label: "RailSoft",
+        ok: reachedServer,
+        detail: reachedServer ? null : "no se pudo contactar RailSoft"
+      },
+      {
+        id: "railIdentity",
+        label: "Identidad Rail autorizada",
+        ok: false,
+        detail: authFailed ? "token rechazado por RailSoft" : "no verificada (sin conectividad)"
+      }
+    ];
+  }
+}
+
 export async function runRailChecks({ env = process.env, rail } = {}) {
   const { rail: activeRail, error: railError } = rail ? { rail, error: null } : buildReadonlyRailFromEnv(env);
 
@@ -196,34 +232,50 @@ export async function runRailChecks({ env = process.env, rail } = {}) {
     ];
   }
 
-  try {
-    await activeRail.listProjects();
-    return [
-      { id: "railConnectivity", label: "RailSoft", ok: true, detail: null },
-      { id: "railIdentity", label: "Identidad Rail autorizada", ok: true, detail: null }
-    ];
-  } catch (err) {
-    // `RailApiClient` sets `err.status` only when Rail actually answered with
-    // a non-2xx HTTP response — that means the server WAS reachable (so
-    // connectivity is fine, it's the token that's rejected). No `err.status`
-    // means the request itself failed (DNS/TCP/TLS) — connectivity is down.
-    const reachedServer = typeof err.status === "number";
-    const authFailed = err.status === 401 || err.status === 403;
+  return classifyRailFacet(activeRail);
+}
+
+/**
+ * `rail-harness doctor`'s local, no-network check of the credential the
+ * console would actually use (HC-03): does `resolveCredentials` (env →
+ * local store) find a token at all? Never prints the token — only whether
+ * one is present and where it came from.
+ */
+export function runCredentialCheck({ env = process.env, homeDir } = {}) {
+  const { token, source } = resolveCredentials({ env, homeDir });
+  if (!token) {
+    return { id: "credential", label: "Credencial Rail", ok: false, detail: "no autenticado (NO_CREDENTIAL)" };
+  }
+  return { id: "credential", label: "Credencial Rail", ok: true, detail: `fuente: ${source}` };
+}
+
+/**
+ * Like `runRailChecks`, but resolves the token with the HC-03 precedence
+ * (env → local credential store) via `buildReadonlyRailFromCredentials`
+ * instead of env-only. `rail`, when given (tests), overrides resolution
+ * entirely, exactly like `runRailChecks`.
+ */
+export async function runRailIdentityChecks({ env = process.env, homeDir, rail } = {}) {
+  const { rail: activeRail, error: railError } = rail
+    ? { rail, error: null }
+    : buildReadonlyRailFromCredentials({ env, homeDir });
+
+  if (railError) {
+    return [{ id: "railConnectivity", label: "RailSoft", ok: false, detail: railError }];
+  }
+
+  if (!activeRail) {
     return [
       {
         id: "railConnectivity",
         label: "RailSoft",
-        ok: reachedServer,
-        detail: reachedServer ? null : "no se pudo contactar RailSoft"
-      },
-      {
-        id: "railIdentity",
-        label: "Identidad Rail autorizada",
         ok: false,
-        detail: authFailed ? "token rechazado por RailSoft" : "no verificada (sin conectividad)"
+        detail: "no configurado (faltan las credenciales de Rail)"
       }
     ];
   }
+
+  return classifyRailFacet(activeRail);
 }
 
 /** Condensed 4-line summary for the main-menu "Chequeando entorno..." block. */
