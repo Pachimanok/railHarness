@@ -82,6 +82,30 @@ export function resolveMode({ ticketRef, recoverRef, resumeRef }) {
 }
 
 /**
+ * The Harness-wide transport policy for `RAIL_API_URL`: HTTPS, or HTTP only
+ * for `localhost` (local development). Pure — no I/O, no env access. Throws
+ * a plain Error, safe to print (it echoes the URL back, never a secret —
+ * `RAIL_API_URL` itself is not a credential). Shared by `loadRuntimeConfig`
+ * (Worker Core) and the Developer Console's read-only Rail facade
+ * (`src/console/rail-readonly.js`) so both enforce the exact same rule.
+ */
+export function assertSecureRailUrl(apiUrl) {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(apiUrl);
+  } catch {
+    throw new Error(`RAIL_API_URL is not a valid URL: ${apiUrl}`);
+  }
+  if (parsedUrl.protocol !== "https:" && parsedUrl.hostname !== "localhost") {
+    throw new Error(
+      `RAIL_API_URL must be https (got ${parsedUrl.protocol}//). ` +
+        "Only localhost may use http, for local development."
+    );
+  }
+  return parsedUrl;
+}
+
+/**
  * Build the runtime config from `env` (defaults to `process.env`).
  *
  * `machineFallback` is injectable for tests (production passes
@@ -100,18 +124,7 @@ export function loadRuntimeConfig(env = process.env, { machineFallback = null } 
   }
 
   const apiUrl = clean(env.RAIL_API_URL);
-  let parsedUrl;
-  try {
-    parsedUrl = new URL(apiUrl);
-  } catch {
-    throw new Error(`RAIL_API_URL is not a valid URL: ${apiUrl}`);
-  }
-  if (parsedUrl.protocol !== "https:" && parsedUrl.hostname !== "localhost") {
-    throw new Error(
-      `RAIL_API_URL must be https (got ${parsedUrl.protocol}//). ` +
-        "Only localhost may use http, for local development."
-    );
-  }
+  assertSecureRailUrl(apiUrl);
 
   const ticketRef = clean(env.RAIL_TICKET_REF);
   const recoverRef = clean(env.RAIL_RECOVER_REF);

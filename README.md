@@ -85,29 +85,65 @@ mutated), `1` (otherwise).
 ## Developer Console
 
 `src/console/` — an interactive terminal UI for developers, added by HC-01
-(Paso 1). Fully additive: it lives outside `src/worker/`, `src/orchestration/`,
-`src/workspace/`, `src/rail/` and `src/adapters/`, never opens a network
-connection, and never runs `npm run worker`. **HC-01 no conecta todavía con
-RailSoft ni inicia el Worker.**
+(Paso 1) and extended by HC-02 (Paso 2). Fully additive: it still lives
+outside `src/worker/`, `src/orchestration/`, `src/workspace/` and
+`src/adapters/`, and never runs `npm run worker`. Since HC-02 it **does**
+talk to RailSoft, but **strictly read-only**: `src/console/rail-readonly.js`
+is the only console file that imports `src/rail/rail-api-client.js`, and it
+exposes exactly `listProjects()` / `listReady()` / `getTicket()` — none of
+`RailApiClient`'s mutating methods (`claim`, `resume`, `recover`,
+`transition`, `addComment`, `createQuery`, `createCheck`,
+`createDeployment`, `updateDeployment`, `heartbeat`, `finishRun`) are
+reachable from the console. **HC-02 consulta RailSoft en modo read-only. No
+reclama tickets ni inicia el Worker.**
 
 ```bash
-npm link          # exposes the `rail-harness` binary globally
-rail-harness       # opens the interactive main menu
+npm link              # exposes the `rail-harness` binary globally
+rail-harness           # opens the interactive main menu
 rail-harness doctor
 rail-harness setup
+rail-harness projects            # read-only: list accessible projects, then exit
+rail-harness ready <projectId>   # read-only: list that project's READY tickets, then exit
 ```
 
 - `rail-harness` — boxed banner, auto-detected Linux user / hostname, a
   condensed environment check, and an arrow-key menu (`Empezar a trabajar` /
-  `Configurar entorno` / `Doctor` / `Salir`). "Empezar a trabajar" only
-  prints a placeholder message — project selection is a later step.
+  `Configurar entorno` / `Doctor` / `Salir`).
+  - **`Empezar a trabajar`** (HC-02): confirms RailSoft connectivity, lists
+    the projects `listProjects()` returns for the current token (never
+    invented, never filtered/reordered beyond a stable label sort), lets the
+    developer pick one and browse its `state=READY` tickets
+    (`listReady(projectId)`), and on picking a ticket re-reads it
+    (`getTicket(ref)`) and re-validates it (right project, still `READY`, no
+    `activeRun`, valid `targetRepository`) before showing a read-only detail
+    screen (`Ticket` / `Título` / `Estado` / `Proyecto` /
+    `targetRepository.repoFullName` / `branch` if present) ending with "El
+    lanzamiento del Worker se habilitará en un próximo paso." — it **never**
+    claims and **never** starts the Worker. Without `RAIL_API_URL` /
+    `RAIL_TOKEN` configured it shows "RailSoft no está configurado para este
+    usuario." and returns to the menu safely.
 - `rail-harness doctor` — runs the 6 local checks (Node version vs.
   `engines.node`, Git, Claude Code, `HOME`, `~/.config/rail-harness`
-  accessible, writable) and exits non-zero if any fails. No RailSoft check
-  yet.
+  accessible, writable) and exits non-zero if any of THOSE fails, unchanged
+  from HC-01. Since HC-02 it additionally prints `✓/✗ RailSoft` and
+  `✓/✗ Identidad Rail autorizada` (a single read-only `listProjects()` call)
+  when credentials are configured — these never affect the local exit code,
+  and RailSoft being unreachable/unconfigured is reported with a clear
+  message, never a stack trace, and never a secret.
 - `rail-harness setup` — creates/verifies `~/.config/rail-harness/config.json`
   (`{ "version": 1 }`, never a token/secret) and prints the environment
   status.
+- `rail-harness projects` / `rail-harness ready <projectId>` — read-only
+  one-shot listings for scripting; same credential rules as the interactive
+  flow.
+
+Rail credentials for HC-02 come **only** from the environment —
+`RAIL_API_URL` + `RAIL_TOKEN` (optionally `RAIL_AGENT`, `RAIL_MACHINE`) —
+exactly like the Worker Core. HC-02 never persists, prints, or prompts for
+`RAIL_TOKEN`; personal/managed credentials are HC-03. See
+`test/console-no-worker-invocation.test.mjs` for the static + dynamic guard
+that no console/bin file can ever produce a Rail mutation (no `POST`/`PATCH`/
+`PUT`/`DELETE`, only `GET`).
 
 Zero new npm dependencies (raw-mode `readline` keypress navigation, with a
 line-based numeric fallback when there is no TTY).
