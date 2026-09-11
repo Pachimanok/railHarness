@@ -36,7 +36,9 @@ import {
   classifyTransition,
   isHumanOnlyRejection,
   createResolvedQueryWaiter,
-  RAIL_QUERY_STATUSES
+  RAIL_QUERY_STATUSES,
+  isKnownQueryStatus,
+  readQueryStatus
 } from "../src/orchestration/rail-effects.js";
 import { assertNoSecrets } from "../src/contracts/execution-envelope.js";
 import { createAdapterRouter } from "../src/adapters/adapter-router.js";
@@ -1434,7 +1436,7 @@ test("FINAL 7 — an OLD RESOLVED query does NOT unblock the wait for the curren
   // Now the REAL query resolves -> the waiter returns ITS answer, not the old one.
   list[1].status = "RESOLVED";
   list[1].answer = "respuesta correcta";
-  assert.deepEqual(await p, { kind: "ANSWERED", answer: "respuesta correcta" });
+  assert.deepEqual(await p, { kind: "HUMAN_ANSWER", answer: "respuesta correcta" });
 });
 
 test("FINAL 8 — a query from another Run does NOT unblock; only query.id === queryId does", async () => {
@@ -1491,7 +1493,7 @@ test("FINAL 10 — transient listQueries error: retried, no invented answer", as
   };
   const waiter = createResolvedQueryWaiter({ api, ref: REF, pollMs: 1, sleep: () => new Promise(r => setTimeout(r, 1)) });
   const out = await waiter({ queryId: "q1" });
-  assert.deepEqual(out, { kind: "ANSWERED", answer: "respuesta real" });
+  assert.deepEqual(out, { kind: "HUMAN_ANSWER", answer: "respuesta real" });
   assert.ok(call >= 3, "reintentó tras el error transitorio en vez de inventar una respuesta");
 });
 
@@ -1535,4 +1537,158 @@ test("FINAL 12 — maxQueryResumes: budget checked BEFORE creating an extra quer
   );
   assert.equal(runRole.seen.length, 2, "un único resume gobernado, luego se detiene");
   assert.match(result.note, /presupuesto de resume|maxQueryResumes/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// RAIL-D-00006 §16 — hardening follow-ups of RAIL-D-00005
+// ═══════════════════════════════════════════════════════════════════════
+
+test("§16A: the internal 'human answer' kind is HUMAN_ANSWER, never the invalid RailSoft status 'ANSWERED'", async () => {
+  const api = { async listQueries() { return { queries: [{ id: "q1", status: "RESOLVED", answer: "usá PostgreSQL" }] }; } };
+  const waiter = createResolvedQueryWaiter({ api, ref: REF, pollMs: 1, sleep: () => new Promise(r => setTimeout(r, 1)) });
+  const out = await waiter({ queryId: "q1" });
+  assert.equal(out.kind, "HUMAN_ANSWER");
+  assert.notEqual(out.kind, "ANSWERED");
+  assert.equal(out.answer, "usá PostgreSQL");
+
+  // and a real 'ANSWERED' RailSoft status is still a contract violation (unchanged)
+  const api2 = { async listQueries() { return { queries: [{ id: "q1", status: "ANSWERED", answer: "x" }] }; } };
+  const w2 = createResolvedQueryWaiter({ api: api2, ref: REF, pollMs: 1, sleep: () => new Promise(r => setTimeout(r, 1)) });
+  await assert.rejects(w2({ queryId: "q1" }), /desconocido|inválida/);
+});
+
+test("§16A: a governed resume still carries the human text verbatim into the SAME session (HUMAN_ANSWER path)", async () => {
+  const api = fakeRail();
+  const runRole = scriptedRunRole([
+    { role: "IMPLEMENTER", result: er("BLOCKED") },
+    { role: "IMPLEMENTER", result: er("IMPLEMENTED", { filesChanged: ["src/a.js"] }) },
+    { role: "REVIEWER", result: er("IMPLEMENTED") },
+    { role: "TESTER", result: er("IMPLEMENTED", { tests: ["npm test : PASS"] }) }
+  ]);
+  const { run } = makeOrch(runRole, { api, orchOpts: { resolveQuery: async () => "usá PostgreSQL" } });
+  const result = await run();
+  assert.equal(result.outcome, "COMPLETED");
+  const resumed = runRole.seen[1];
+  assert.equal(resumed.envelope.resumeAnswer, "usá PostgreSQL");
+  assert.equal(resumed.envelope.session.id, runRole.seen[0].envelope.session.id, "misma sesión");
+});
+
+test("§16B: query status validation has a single source of truth (RAIL_QUERY_STATUSES)", () => {
+  assert.deepEqual([...RAIL_QUERY_STATUSES], ["PENDING", "RESOLVED", "DISMISSED"]);
+  for (const s of RAIL_QUERY_STATUSES) assert.equal(isKnownQueryStatus(s), true);
+  for (const s of ["ANSWERED", "CLOSED", "OPEN", "", null, undefined, "pending "]) {
+    assert.equal(isKnownQueryStatus(s), false, JSON.stringify(s));
+  }
+  assert.equal(isKnownQueryStatus("pending"), true, "case-insensitive");
+  assert.equal(readQueryStatus({ status: "resolved" }), "RESOLVED");
+  assert.equal(readQueryStatus({ state: "dismissed" }), "DISMISSED");
+});
+
+test("§16D: maxQueryResumes=0 disables Agent Queries — a BLOCKED role fails closed and NO query is created", async () => {
+  const api = fakeRail();
+  const runRole = scriptedRunRole([{ role: "IMPLEMENTER", result: er("BLOCKED") }]);
+  const { run } = makeOrch(runRole, { api, orchOpts: { maxQueryResumes: 0 } });
+  const result = await run();
+
+  assert.equal(result.outcome, "BLOCKED");
+  assert.equal(mapOrchestrationOutcome(result).outcome, "FAILED");
+  assert.equal(api.calls.createQuery.length, 0, "cero Agent Queries con maxQueryResumes=0");
+  assert.equal(api.calls.transition.length, 0);
+  assert.equal(runRole.seen.length, 1, "no hay resume");
+  assert.match(result.note, /deshabilitadas|maxQueryResumes=0/);
+});
+
+test("§16D: maxQueryResumes / maxReworks must be integers >= 0", () => {
+  const base = { api: fakeRail(), runRole: scriptedRunRole([]) };
+  assert.throws(() => createOrchestrator({ ...base, maxQueryResumes: -1 }), /maxQueryResumes/);
+  assert.throws(() => createOrchestrator({ ...base, maxQueryResumes: 1.5 }), /maxQueryResumes/);
+  assert.throws(() => createOrchestrator({ ...base, maxReworks: -3 }), /maxReworks/);
+  assert.doesNotThrow(() => createOrchestrator({ ...base, maxQueryResumes: 0 }));
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// RAIL-D-00006 — state-aware /resume entry: the orchestrator continues from
+// the EXACT state Rail preserved and never re-runs / re-publishes a stage
+// Rail already accepted.
+// ═══════════════════════════════════════════════════════════════════════
+
+test("resume entry REVIEWING: runs REVIEWER then TESTER — NO IMPLEMENTER, NO IMPLEMENTATION check, NO rewind to IN_PROGRESS", async () => {
+  const api = fakeRail();
+  const runRole = scriptedRunRole([
+    { role: "REVIEWER", result: er("IMPLEMENTED") },
+    { role: "TESTER", result: er("IMPLEMENTED", { tests: ["npm test : PASS"] }) }
+  ]);
+  const { run } = makeOrch(runRole, { api, execOpts: { startState: "REVIEWING" } });
+  const result = await run();
+
+  assert.equal(result.outcome, "COMPLETED");
+  assert.deepEqual(runRole.seen.map(s => s.role), ["REVIEWER", "TESTER"]);
+  assert.deepEqual(
+    api.calls.createCheck.map(c => c.body.type),
+    ["CODE_REVIEW", "AUTOMATED_TESTS", "ACCEPTANCE_CRITERIA"]
+  );
+  assert.deepEqual(api.calls.transition.map(t => t.body.to), ["TESTING", "SANDBOX_READY"]);
+  assert.ok(!api.calls.transition.some(t => t.body.to === "IN_PROGRESS"), "no rebobina el estado");
+});
+
+test("resume entry TESTING: runs the TESTER only — NO IMPLEMENTER/REVIEWER, NO IMPLEMENTATION/CODE_REVIEW check", async () => {
+  const api = fakeRail();
+  const runRole = scriptedRunRole([
+    { role: "TESTER", result: er("IMPLEMENTED", { tests: ["npm test : PASS"] }) }
+  ]);
+  const { run } = makeOrch(runRole, { api, execOpts: { startState: "TESTING" } });
+  const result = await run();
+
+  assert.equal(result.outcome, "COMPLETED");
+  assert.deepEqual(runRole.seen.map(s => s.role), ["TESTER"]);
+  assert.deepEqual(api.calls.createCheck.map(c => c.body.type), ["AUTOMATED_TESTS", "ACCEPTANCE_CRITERIA"]);
+  assert.ok(!api.calls.createCheck.some(c => c.body.type === "IMPLEMENTATION"));
+  assert.ok(!api.calls.createCheck.some(c => c.body.type === "CODE_REVIEW"));
+  assert.deepEqual(api.calls.transition.map(t => t.body.to), ["SANDBOX_READY"]);
+});
+
+test("resume entry SANDBOX_READY (== targetState): nothing executed, nothing published, outcome COMPLETED", async () => {
+  const api = fakeRail();
+  const runRole = scriptedRunRole([]);
+  const { run } = makeOrch(runRole, { api, execOpts: { startState: "SANDBOX_READY" } });
+  const result = await run();
+
+  assert.equal(result.outcome, "COMPLETED");
+  assert.equal(runRole.seen.length, 0);
+  assert.equal(api.calls.createCheck.length, 0);
+  assert.equal(api.calls.transition.length, 0);
+});
+
+test("resume entry SANDBOX_READY + humanOnly on that state => HANDOFF with a governed note, no fabricated approval", async () => {
+  const api = fakeRail();
+  const runRole = scriptedRunRole([]);
+  const { run } = makeOrch(runRole, {
+    api,
+    orchOpts: { humanOnlyStates: ["SANDBOX_READY"] },
+    execOpts: { startState: "SANDBOX_READY" }
+  });
+  const result = await run();
+
+  assert.equal(result.outcome, "HANDOFF");
+  assert.equal(mapOrchestrationOutcome(result).outcome, "COMPLETED");
+  assert.equal(api.calls.transition.length, 0);
+  assert.ok(api.calls.addComment.length >= 1, "deja una nota gobernada");
+});
+
+test("resume entry REVIEWING with a REVIEWER REWORK: governed rewind + IMPLEMENTER RECOVERY + fresh IMPLEMENTATION check, then re-review", async () => {
+  const api = fakeRail();
+  const runRole = scriptedRunRole([
+    { role: "REVIEWER", result: er("RELEASE") }, // reviewer RELEASE => REWORK
+    { role: "IMPLEMENTER", result: er("IMPLEMENTED", { filesChanged: ["src/fix.js"] }) },
+    { role: "REVIEWER", result: er("IMPLEMENTED") },
+    { role: "TESTER", result: er("IMPLEMENTED", { tests: ["npm test : PASS"] }) }
+  ]);
+  const { run } = makeOrch(runRole, { api, execOpts: { startState: "REVIEWING" }, orchOpts: { maxReworks: 1 } });
+  const result = await run();
+
+  assert.equal(result.outcome, "COMPLETED");
+  // rewind REVIEWING -> IN_PROGRESS happened, then IMPLEMENTATION was published during the rework
+  assert.ok(api.calls.transition.some(t => t.body.to === "IN_PROGRESS"), "rewind gobernado");
+  assert.ok(api.calls.createCheck.some(c => c.body.type === "IMPLEMENTATION"), "IMPLEMENTATION durante el rework");
+  assert.deepEqual(runRole.seen.map(s => s.role), ["REVIEWER", "IMPLEMENTER", "REVIEWER", "TESTER"]);
 });

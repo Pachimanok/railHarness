@@ -26,7 +26,7 @@ checks / transitions → `SANDBOX_READY`.
 | `src/worker/` — **Worker Core**: discovery, preflight, atomic claim, heartbeat, fencing, shutdown | `docs/WORKER_CORE.md` |
 | `src/workspace/` — **Workspace Manager**: isolated `git worktree` + ticket branch, repo validation | `docs/WORKSPACE_MANAGER.md` |
 | `src/orchestration/` — **Orchestration**: roles, Agent Queries, checks, transitions, humanOnly hand-off | `docs/ORCHESTRATION.md` |
-| — | Full resume / recovery of an orphaned `IN_PROGRESS` cycle — later ticket |
+| `src/worker/recovery*.js` — **Continuation**: governed `/resume` (general, any non-terminal cycle, state preserved) + `/recover` (compat) (RAIL-D-00006) | `docs/RECOVERY.md` |
 
 ## Documentation
 
@@ -38,6 +38,7 @@ checks / transitions → `SANDBOX_READY`.
 - [`docs/WORKSPACE_MANAGER.md`](docs/WORKSPACE_MANAGER.md) — isolated `git worktree` + ticket branch, repo validation, safe reuse/cleanup.
 - [`docs/ADAPTER_ROUTER.md`](docs/ADAPTER_ROUTER.md) — provider-independent adapter routing and the Claude Code adapter.
 - [`docs/ORCHESTRATION.md`](docs/ORCHESTRATION.md) — roles, Agent Queries, checks, transitions, humanOnly hand-off.
+- [`docs/RECOVERY.md`](docs/RECOVERY.md) — governed continuation of ownership: `claim` ≠ `resume` ≠ `recover`, `/resume` (general, preserves cycle state, ownerless last Run in any non-`ACTIVE` state), `/recover` (compat), `lastRunId`, fail-closed rules, state-aware orchestration, ownership / heartbeat / fencing, runbook.
 
 ## Running the Worker Core
 
@@ -53,6 +54,33 @@ tearing down cleanly on `SIGINT` / `SIGTERM`. Optional overrides:
 `RAIL_HEARTBEAT_INTERVAL_MS` (default `300000`), `RAIL_DISCOVERY_POLL_MS`
 (default `30000`), `RAIL_ADAPTER_PROVIDER` (default `claude-code`). Requires
 `RAIL_WORKSPACE_ROOT`. The token and any per-Run `claimToken` are never printed.
+
+### Resume / recover modes
+
+```bash
+RAIL_RESUME_REF="RAIL-D-00006"  npm run worker   # GENERAL /resume, then exit
+RAIL_RECOVER_REF="RAIL-D-00006" npm run worker   # classic /recover compat, then exit
+```
+
+`RAIL_RESUME_REF`, `RAIL_RECOVER_REF` and `RAIL_TICKET_REF` are **mutually
+exclusive** and each uses a **distinct endpoint** with **no fallback between
+them** (`docs/RECOVERY.md`).
+
+- **`/resume`** (RAIL-D-00006 AC-11 / AC-12) — a stale `activeRun` in **any
+  non-terminal state** (`REVIEWING` / `TESTING` / …) or an ownerless cycle
+  whose last Run finished in **any** non-`ACTIVE` state
+  (`COMPLETED` / `RELEASED` / `FAILED` / `ABANDONED`). The cycle state is
+  **preserved exactly** and the orchestration continues from the real stage
+  (no re-run / re-publish of an already-accepted check). Old Run untouched.
+- **`/recover`** — compat for the classic orphaned `IN_PROGRESS`
+  (`activeRun == null`, last Run `FAILED` / `ABANDONED`).
+
+Both: read-only preflight → read-only worktree check → **one** governed POST
+(`claim` is never a fallback) → heartbeat with the new `claimToken` + one
+governed execution from the preserved state → `finishRun` for the new Run
+exactly once. Optional `RAIL_RESUME_NOTES` / `RAIL_RECOVER_NOTES` → the
+`reason`. Exit `0` (new Run `COMPLETED`), `2` (fail-closed no-op, nothing
+mutated), `1` (otherwise).
 
 ## Configuration
 

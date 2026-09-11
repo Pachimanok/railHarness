@@ -98,6 +98,28 @@ test("resumeAnswer must be a string or null", () => {
   assert.equal(env.resumeAnswer, "use postgres");
 });
 
+test("RAIL-D-00006 §16C: an empty / whitespace resumeAnswer is rejected (never a valid resume)", () => {
+  for (const bad of ["", "   ", "\t\n"]) {
+    assert.throws(
+      () => buildExecutionEnvelope(implementArgs({ resumeAnswer: bad })),
+      /resumeAnswer must be null or a non-empty string/,
+      JSON.stringify(bad)
+    );
+    const check = validateExecutionEnvelope({
+      ...buildExecutionEnvelope(implementArgs()),
+      resumeAnswer: bad
+    });
+    assert.ok(!check.valid);
+    assert.ok(check.errors.some(e => /non-empty string/.test(e)));
+  }
+  // null is still fine; a real answer is still fine
+  assert.equal(buildExecutionEnvelope(implementArgs({ resumeAnswer: null })).resumeAnswer, null);
+  assert.equal(
+    buildExecutionEnvelope(implementArgs({ resumeAnswer: "  usá PostgreSQL  " })).resumeAnswer,
+    "  usá PostgreSQL  "
+  );
+});
+
 test("assertNoSecrets throws if a secret key is smuggled in", () => {
   assert.throws(
     () => assertNoSecrets({ run: { id: "r", claimToken: "x" } }),

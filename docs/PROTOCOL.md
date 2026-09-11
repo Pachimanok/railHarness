@@ -54,7 +54,8 @@ these.
 | Method | Path | Client method | Effect |
 |---|---|---|---|
 | POST | `/tickets/:ref/claim` | `claim(ref, branch)` | Rail creates a Run from `state=READY` → `CLAIMED`. Returns a Run handoff. |
-| POST | `/tickets/:ref/recover` | `recover(ref, {branch, worktreePath, lastRunId, reason})` | Governed reclaim of an orphaned `IN_PROGRESS` cycle. Returns a Run handoff. May be absent (404/405/501). See `docs/STATE_MACHINE.md`. |
+| POST | `/tickets/:ref/resume` | `resume(ref, {branch, worktreePath, lastRunId, reason})` | **GENERAL** continuation of ownership on a NON-terminal cycle (RAIL-D-00006). Preserves `WorkCycle.state` EXACTLY. Stale takeover (`activeRun` `ACTIVE`, `leaseExpiresAt <= now`) or ownerless resume (`activeRun == null`, last Run `state != ACTIVE` — `COMPLETED`/`RELEASED`/`FAILED`/`ABANDONED` all valid). Creates a new `ACTIVE` Run with `recoveryOfRunId = <old Run>`; the old Run stays terminal and untouched. Returns a Run handoff. May be absent (404/405/501). See `docs/RECOVERY.md`. |
+| POST | `/tickets/:ref/recover` | `recover(ref, {branch, worktreePath, lastRunId, reason})` | **COMPAT** reclaim of an orphaned `IN_PROGRESS` cycle (`activeRun == null`, last Run `FAILED`/`ABANDONED`; RailSoft also allows an `IN_PROGRESS` stale takeover). Does **not** replace `/resume`. Returns a Run handoff. May be absent (404/405/501). See `docs/STATE_MACHINE.md`. |
 | POST | `/tickets/:ref/transitions` | `transition(ref, {to, reason, runId})` | Request a `WorkCycle` state change. Rail validates. |
 | POST | `/tickets/:ref/checks` | `createCheck(ref, {type, status, note, runId, …})` | Attach a check result (e.g. `IMPLEMENTATION/PASS`). |
 | POST | `/tickets/:ref/queries` | `createQuery(ref, {question, context, impact, blocking, runId})` | Raise a blocking Agent Query for a human. |
@@ -69,8 +70,8 @@ order is the Worker Core / Orchestration ticket.
 
 ## Run handoff normalization
 
-`claim()` and `recover()` both return **one shape** via
-`normalizeRunHandoff(data)`:
+`claim()`, `resume()` and `recover()` all return **one shape** via the SAME
+`normalizeRunHandoff(data)` (not re-implemented per endpoint):
 
 ```jsonc
 {
@@ -82,20 +83,32 @@ order is the Worker Core / Orchestration ticket.
 
 Rail returns the freshly-created Run under different keys per endpoint
 (`run` for claim; `activeRun` + `recoveryOfRunId` + `cycle.state` for
-recover; sometimes top-level). Callers only ever read
+resume / recover; sometimes top-level). Callers only ever read
 `handoff.run.{id,claimToken,leaseExpiresAt}` and
-`handoff.recovered.{fromRunId,cycleState}`.
+`handoff.recovered.{fromRunId,cycleState}`. For `/resume`, `recovered.cycleState`
+is the **preserved** cycle state (e.g. `REVIEWING`), not `IN_PROGRESS`.
 
 A `2xx` response whose normalized `run.id` / `run.claimToken` is still
 missing is a **contract error**, not an absent endpoint — the caller must not
 retry the mutation and must not continue without a `claimToken`.
 
+For `resume()` / `recover()` (RAIL-D-00006, `docs/RECOVERY.md`): on that
+contract error the Harness does a **read-only `GET /tickets/:ref`** and reports
+whether Rail nonetheless created an `activeRun` (the `claimToken` is never
+printed). The Harness also fails closed when `recovered.fromRunId` is present
+and ≠ the requested `lastRunId`, or when the new `run.id` equals `lastRunId`
+(a continuation must produce a **new** Run). **None of these ever trigger a
+fallback** — `resume` never falls back to `recover` or `claim`; `recover`
+never falls back to `resume` or `claim`.
+
 ## Error shape
 
 A non-2xx response throws an `Error` carrying `status`, `code`, `missing[]`
-and `data`. `recover()` answering `404 / 405 / 501` (or a `NOT_FOUND` /
-`NOT_IMPLEMENTED` / `UNKNOWN_ROUTE` code) means the governed recover endpoint
-is not deployed; the Harness aborts recovery with no alternative mutation.
+and `data`. `resume()` / `recover()` answering `404 / 405 / 501` (or a
+`NOT_FOUND` / `NOT_IMPLEMENTED` / `UNKNOWN_ROUTE` / `METHOD_NOT_ALLOWED` code)
+means that governed endpoint is not deployed; the Harness aborts the
+continuation with **no alternative mutation** (no fallback to the other
+endpoint, no `claim`).
 
 ## Heartbeat / lease
 

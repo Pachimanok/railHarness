@@ -114,6 +114,13 @@ export function buildExecutionEnvelope({
   if (resumeAnswer !== null && typeof resumeAnswer !== "string") {
     throw new Error("resumeAnswer must be a string or null");
   }
+  // A resume is driven by a REAL, non-empty human answer (RailSoft's
+  // `answerQuery` rejects empty `answer` as `invalid_input`). `""` / whitespace
+  // is never a valid resume — make it a contract invariant, not just a
+  // production convention.
+  if (typeof resumeAnswer === "string" && resumeAnswer.trim() === "") {
+    throw new Error("resumeAnswer must be null or a non-empty string (after trim)");
+  }
   if (kind === "RECOVERY" && continuation == null) {
     throw new Error("RECOVERY envelopes require a continuation context");
   }
@@ -181,6 +188,13 @@ export function validateExecutionEnvelope(value) {
     }
     if (value.kind === "IMPLEMENT" && value.continuation != null) {
       errors.push("IMPLEMENT must not carry continuation");
+    }
+    if (value.resumeAnswer !== null && value.resumeAnswer !== undefined) {
+      if (typeof value.resumeAnswer !== "string") {
+        errors.push("resumeAnswer must be a string or null");
+      } else if (value.resumeAnswer.trim() === "") {
+        errors.push("resumeAnswer must be null or a non-empty string (after trim)");
+      }
     }
     const lang = validateLanguagePolicy(value.languagePolicy);
     if (!lang.valid) errors.push(...lang.errors);

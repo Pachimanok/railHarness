@@ -57,6 +57,29 @@ endpoint only carries free-text `note` + `detailsUrl`):
 a Tester that returns `IMPLEMENTED` **without any test command** does not get
 an `AUTOMATED_TESTS` PASS and the flow does not advance.
 
+### State-aware entry (`execute({ startState, recovery })`) — RAIL-D-00006
+
+`execute` enters the flow at `startState` and **never re-runs — or re-publishes
+the check for — a stage Rail already accepted for this HEAD**:
+
+| `startState` | Runs | Publishes | Skips |
+|---|---|---|---|
+| `CLAIMED` | step 0 then IMPLEMENTER → REVIEWER → TESTER | all four checks | — |
+| `IN_PROGRESS` | IMPLEMENTER → REVIEWER → TESTER (IMPLEMENTER as `RECOVERY` kind when `recovery` is set — continue, don't start cold) | `IMPLEMENTATION` → `CODE_REVIEW` → `AUTOMATED_TESTS` + `ACCEPTANCE_CRITERIA` | — |
+| `REVIEWING` | REVIEWER → TESTER | `CODE_REVIEW` → `AUTOMATED_TESTS` + `ACCEPTANCE_CRITERIA` | IMPLEMENTER; `IMPLEMENTATION` check; any rewind to `IN_PROGRESS` on entry |
+| `TESTING` | TESTER only | `AUTOMATED_TESTS` + `ACCEPTANCE_CRITERIA` | IMPLEMENTER, REVIEWER; `IMPLEMENTATION`, `CODE_REVIEW` checks |
+| `<targetState>` | nothing | nothing | everything — `HANDOFF` if that state is `humanOnly`, else `COMPLETED` |
+| other non-terminal | nothing | nothing | outcome `RELEASED` (unexpected state) |
+
+On a pure `/resume` entry into `REVIEWING` / `TESTING` there is no fresh
+`lastImpl`; the REVIEWER / TESTER get a factual *"resumed, prior stages already
+accepted — do not re-implement"* brief. A `REWORK` from a resumed REVIEWER /
+TESTER still goes through the **governed rewind** `REVIEWING`/`TESTING →
+IN_PROGRESS` before the IMPLEMENTER re-runs (an implementer session id is
+created on demand). `recovery` (`{ fromRunId, target }`) only changes the
+first IMPLEMENTER's `kind` to `RECOVERY`; the entry state comes from
+`startState`, which the `/resume` runner sets to the PRESERVED cycle state.
+
 ## Roles are separate — semantically and in execution
 
 - Each role is its **own adapter execution** with its **own fresh session id**
@@ -104,9 +127,14 @@ without answering"*. When no blocking `PENDING` query remains, RailSoft's
 When a role returns `BLOCKED`:
 
 1. **Budget first.** Before creating a *new* Agent Query the orchestrator checks
-   the `maxQueryResumes` budget (default 1). If it is already spent, **no query
-   is created** (an unwaitable query would be an orphan) — the advance stops
-   `BLOCKED` (→ Run `FAILED`).
+   the `maxQueryResumes` budget (default 1; **must be an integer ≥ 0**). If it is
+   already spent, **no query is created** (an unwaitable query would be an
+   orphan) — the advance stops `BLOCKED` (→ Run `FAILED`).
+   **`maxQueryResumes = 0`** has explicit semantics: Agent-Query-driven resume is
+   **disabled** — a role that returns `BLOCKED` is fail-closed immediately
+   (`BLOCKED` → Run `FAILED`) and **no Agent Query is ever created**. `1` allows
+   exactly one governed human resume. A non-integer / negative value throws at
+   construction.
 2. The orchestrator raises a **blocking** Agent Query with the role's own
    `question` / `context` / `impact` (`createQuery({ blocking: true, runId })`).
    It never invents these. If Rail returns **no `queryId`**, that violates the
@@ -144,6 +172,14 @@ When a role returns `BLOCKED`:
    framing, not generic IMPLEMENTER text). It does not start a new task. Budget:
    `maxQueryResumes`; if the role stays `BLOCKED` after it, the orchestration
    ends `BLOCKED` (→ Run `FAILED`), never a silent `RELEASED`.
+
+   The waiter's internal "a human answered" result is `{ kind: "HUMAN_ANSWER",
+   answer }` — deliberately **not** `"ANSWERED"`, which is an *invalid* RailSoft
+   status (RailSoft statuses stay `PENDING` / `RESOLVED` / `DISMISSED`, and
+   "known vs contract-violation" is decided **only** by `RAIL_QUERY_STATUSES`
+   via `isKnownQueryStatus` — one source of truth, no second hard-coded list).
+   `resumeAnswer` is a **contract invariant**: `null` or a non-empty string
+   after `trim()` — `buildExecutionEnvelope` rejects `""` / whitespace.
 6. If Rail rejects the *creation* of the query, the rejection is respected: the
    advance stops, outcome `FAILED`, nothing forced.
 7. A cancel / fencing during the wait aborts it promptly → outcome `CANCELLED`.
@@ -246,8 +282,10 @@ heartbeat, transition, check or finish.
 | `RAIL_ADAPTER_PROVIDER` | `claude-code` | explicit adapter provider, resolved through the AdapterRouter |
 | `RAIL_WORKSPACE_ROOT` | — | required: the isolated worktree root (Workspace Manager) |
 | `queryPollMs` (option) | `15000` | blocking Agent Query poll interval; injectable, with `sleep`, for tests |
-| `maxQueryResumes` (option) | `1` | governed `BLOCKED`→resume budget; checked **before** creating a new Agent Query so an unwaitable query is never created |
-| `maxReworks` (option) | `1` | REVIEWER / TESTER `REWORK` budget |
+| `maxQueryResumes` (option) | `1` | governed `BLOCKED`→resume budget; integer ≥ 0, checked **before** creating a new Agent Query so an unwaitable query is never created. `0` = Agent Queries **disabled**, `BLOCKED` fails closed with no query |
+| `maxReworks` (option) | `1` | REVIEWER / TESTER `REWORK` budget (integer ≥ 0) |
+| `startState` (execute arg) | `CLAIMED` | RAIL-D-00006: the flow ENTERS here. `/resume` sets it to the PRESERVED cycle state (`REVIEWING` / `TESTING` / …); stages Rail already accepted are not re-run or re-published. See the "State-aware entry" table above |
+| `recovery` (execute arg) | `null` | RAIL-D-00006: when set (`{ fromRunId, target }`), the first IMPLEMENTER (only reached from `startState` `IN_PROGRESS`) runs as a `RECOVERY` continuation (do not start cold). A RUN continuation — **not** an adapter-session resume; no fabricated answer/approval. See `docs/RECOVERY.md` |
 
 ## Tests
 

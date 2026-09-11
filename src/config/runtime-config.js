@@ -26,8 +26,10 @@ export const OPTIONAL_ENV = Object.freeze([
   "RAIL_AGENT",
   "RAIL_TICKET_REF",
   "RAIL_RECOVER_REF",
+  "RAIL_RESUME_REF",
   "RAIL_BASE_BRANCH",
   "RAIL_RECOVER_NOTES",
+  "RAIL_RESUME_NOTES",
   // Worker Core (src/worker/cli.js) — polling / heartbeat cadence.
   "RAIL_HEARTBEAT_INTERVAL_MS",
   "RAIL_DISCOVERY_POLL_MS",
@@ -42,7 +44,8 @@ export const OPTIONAL_ENV = Object.freeze([
 export const HARNESS_MODES = Object.freeze({
   DISCOVERY: "discovery",
   EXPLICIT: "explicit",
-  RECOVER: "recover"
+  RECOVER: "recover", // POST /recover — IN_PROGRESS ownerless FAILED/ABANDONED compat
+  RESUME: "resume" // POST /resume  — GENERAL continuation of a non-terminal cycle
 });
 
 const DEFAULT_AGENT = "rail-harness";
@@ -53,17 +56,26 @@ function clean(value) {
 }
 
 /**
- * `RAIL_TICKET_REF` (explicit claim) and `RAIL_RECOVER_REF` (governed
- * recovery of an orphaned IN_PROGRESS cycle) are mutually exclusive. Mirror
- * of the reference's `assertModeSelection`. Pure.
+ * `RAIL_TICKET_REF` (explicit claim), `RAIL_RESUME_REF` (governed GENERAL
+ * `/resume` continuation of a non-terminal cycle) and `RAIL_RECOVER_REF`
+ * (compat `/recover` of an orphaned IN_PROGRESS cycle) are MUTUALLY EXCLUSIVE —
+ * each mode uses a distinct endpoint and there is no fallback between them.
+ * Mirror of the reference's `assertModeSelection`. Pure.
  */
-export function resolveMode({ ticketRef, recoverRef }) {
-  if (ticketRef && recoverRef) {
+export function resolveMode({ ticketRef, recoverRef, resumeRef }) {
+  const set = [
+    ["RAIL_TICKET_REF", ticketRef],
+    ["RAIL_RECOVER_REF", recoverRef],
+    ["RAIL_RESUME_REF", resumeRef]
+  ].filter(([, v]) => v);
+  if (set.length > 1) {
     throw new Error(
-      "RAIL_RECOVER_REF and RAIL_TICKET_REF are mutually exclusive. " +
-        "Use RAIL_RECOVER_REF to recover an orphaned cycle, or RAIL_TICKET_REF for a normal claim."
+      `${set.map(([n]) => n).join(", ")} are mutually exclusive. Use RAIL_RESUME_REF to continue a ` +
+        "non-terminal cycle (/resume), RAIL_RECOVER_REF for the classic /recover of an orphaned " +
+        "IN_PROGRESS cycle, or RAIL_TICKET_REF for a normal claim."
     );
   }
+  if (resumeRef) return HARNESS_MODES.RESUME;
   if (recoverRef) return HARNESS_MODES.RECOVER;
   if (ticketRef) return HARNESS_MODES.EXPLICIT;
   return HARNESS_MODES.DISCOVERY;
@@ -103,7 +115,8 @@ export function loadRuntimeConfig(env = process.env, { machineFallback = null } 
 
   const ticketRef = clean(env.RAIL_TICKET_REF);
   const recoverRef = clean(env.RAIL_RECOVER_REF);
-  const mode = resolveMode({ ticketRef, recoverRef });
+  const resumeRef = clean(env.RAIL_RESUME_REF);
+  const mode = resolveMode({ ticketRef, recoverRef, resumeRef });
 
   const config = {
     rail: {
@@ -120,8 +133,10 @@ export function loadRuntimeConfig(env = process.env, { machineFallback = null } 
     mode,
     ticketRef,
     recoverRef,
+    resumeRef,
     baseBranch: clean(env.RAIL_BASE_BRANCH),
-    recoverNotes: clean(env.RAIL_RECOVER_NOTES)
+    recoverNotes: clean(env.RAIL_RECOVER_NOTES),
+    resumeNotes: clean(env.RAIL_RESUME_NOTES)
   };
 
   config.rail = Object.freeze(config.rail);
@@ -149,6 +164,7 @@ export function describeConfig(config) {
     `mode:       ${config.mode}`,
     `ticketRef:  ${config.ticketRef ?? "(ninguno)"}`,
     `recoverRef: ${config.recoverRef ?? "(ninguno)"}`,
+    `resumeRef:  ${config.resumeRef ?? "(ninguno)"}`,
     `baseBranch: ${config.baseBranch ?? "(autodetección)"}`
   ];
 

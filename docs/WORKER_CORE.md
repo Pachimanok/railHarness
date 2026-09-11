@@ -50,13 +50,24 @@ execution.
 | Real isolated git worktree + branch | Workspace Manager (RAIL-D-00003) — done |
 | Real Claude Code adapter execution | AdapterRouter (RAIL-D-00004) — done |
 | Implementer / Reviewer / Tester orchestration and `WorkCycle` transitions (`CLAIMED → IN_PROGRESS → REVIEWING → TESTING → SANDBOX_READY`) | Orchestration (RAIL-D-00005) — done, `docs/ORCHESTRATION.md` |
-| Full resume / recovery of an orphaned `IN_PROGRESS` cycle | later ticket |
+| Resume / recovery of a stale / ownerless cycle | RAIL-D-00006 — done, `docs/RECOVERY.md` (`src/worker/recovery.js` + `recovery-preflight.js`; `RAIL_RESUME_REF` → `/resume`, `RAIL_RECOVER_REF` → `/recover` compat) |
 
-The Worker Core itself **still does not** call `POST /transitions`,
-`POST /checks`, `POST /queries`, or `POST /recover` — those are the
-Orchestration collaborator's, on the Run the Core already owns. The Core
-uses: `listProjects`, `listReady`, `getTicket` (read-only) and `claim`,
-`heartbeat`, `finishRun` (governed).
+The **discovery-loop** Worker Core still does not call `POST /transitions`,
+`POST /checks`, `POST /queries`, or `POST /resume` / `POST /recover` — those
+are the Orchestration / continuation collaborator's, on the Run the Core
+already owns. The Core uses: `listProjects`, `listReady`, `getTicket`
+(read-only) and `claim`, `heartbeat`, `finishRun` (governed).
+
+`RAIL_RESUME_REF=<ref>` (the GENERAL path) or `RAIL_RECOVER_REF=<ref>` (classic
+compat) — mutually exclusive with `RAIL_TICKET_REF` and each other — switches
+`npm run worker` to a **one-shot governed continuation** instead of the
+discovery loop: `getTicket` (read-only) → fail-closed preflight → read-only
+worktree check → **one** `POST /resume` (or `/recover`) — `claim` and the
+other endpoint are never a fallback → heartbeat with the **new** `claimToken`
++ one governed execution **from the preserved cycle state** → `finishRun` for
+the new Run exactly once. `/resume` preserves `WorkCycle.state` exactly and
+continues from the real stage (`REVIEWING` / `TESTING` / …) without re-running
+an accepted step. See `docs/RECOVERY.md`.
 
 ## The execution collaborator
 

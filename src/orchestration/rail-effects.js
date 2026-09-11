@@ -190,6 +190,22 @@ export function extractQueries(data) {
  */
 export const RAIL_QUERY_STATUSES = Object.freeze(["PENDING", "RESOLVED", "DISMISSED"]);
 
+/**
+ * The ONE place that decides whether a raw Agent Query status is one RailSoft
+ * can produce. Everything else (the waiter's switch, tests, docs) derives
+ * "known vs contract-violation" from `RAIL_QUERY_STATUSES` through this helper —
+ * there is no second hard-coded list. Never made more permissive: only the
+ * three values above are known.
+ */
+export function isKnownQueryStatus(status) {
+  return RAIL_QUERY_STATUSES.includes(String(status ?? "").toUpperCase());
+}
+
+/** Read + upper-case a query's status, tolerating `status` / `state` keys. */
+export function readQueryStatus(query) {
+  return String(query?.status ?? query?.state ?? "").toUpperCase();
+}
+
 /** Error a waiter throws when RailSoft's Agent Query contract is violated. */
 function queryContractError(msg) {
   const e = new Error(
@@ -212,9 +228,11 @@ function queryContractError(msg) {
  *   - `PENDING`  → keep waiting (the caller's Promise stays pending, so the
  *     Worker Core keeps heartbeating and the Run stays ACTIVE; `finishRun` is
  *     never called).
- *   - `RESOLVED` → resolve `{ kind: "ANSWERED", answer }` with the trimmed human
- *     text. `RESOLVED` without non-empty `answer` contradicts `answerQuery` and
- *     is thrown as a contract violation (never a synthetic answer).
+ *   - `RESOLVED` → resolve `{ kind: "HUMAN_ANSWER", answer }` with the trimmed
+ *     human text. `RESOLVED` without non-empty `answer` contradicts `answerQuery`
+ *     and is thrown as a contract violation (never a synthetic answer). The
+ *     `kind` is deliberately NOT `"ANSWERED"` — `ANSWERED` is an *invalid*
+ *     RailSoft status and the two must never be confused.
  *   - `DISMISSED` → resolve `{ kind: "DISMISSED" }`. This is NOT a human answer:
  *     the caller must NOT resume, NOT synthesize an instruction.
  *   - Any other status (`ANSWERED`, `CLOSED`, …) → contract violation, thrown.
@@ -233,7 +251,7 @@ function queryContractError(msg) {
  * @param {AbortSignal} [p.signal]
  * @param {(ms:number)=>Promise} [p.sleep]
  * @param {(msg:string)=>void} [p.logger]
- * @returns {(q:{queryId:string}) => Promise<{kind:"ANSWERED",answer:string}|{kind:"DISMISSED"}>}
+ * @returns {(q:{queryId:string}) => Promise<{kind:"HUMAN_ANSWER",answer:string}|{kind:"DISMISSED"}>}
  */
 export function createResolvedQueryWaiter({
   api,
@@ -316,7 +334,16 @@ export function createResolvedQueryWaiter({
       const q = list.find(x => x?.id === queryId || x?.queryId === queryId);
       if (!q) continue; // not visible yet — keep waiting
 
-      const status = String(q.status ?? q.state ?? "").toUpperCase();
+      const status = readQueryStatus(q);
+      // Single source of truth: a status RailSoft cannot produce (`ANSWERED`,
+      // `CLOSED`, unknown) is a contract violation — decided ONLY by
+      // `RAIL_QUERY_STATUSES`, not a second hard-coded list.
+      if (!isKnownQueryStatus(status)) {
+        throw queryContractError(
+          `estado de query desconocido '${status}' para ${queryId} ` +
+            `(RailSoft sólo define ${RAIL_QUERY_STATUSES.join(" / ")})`
+        );
+      }
       switch (status) {
         case "PENDING":
           continue; // still blocking; keep waiting
@@ -330,7 +357,7 @@ export function createResolvedQueryWaiter({
             );
           }
           log(`Agent Query ${queryId} resuelta por un humano en ${ref}.`);
-          return Object.freeze({ kind: "ANSWERED", answer: answer.trim() });
+          return Object.freeze({ kind: "HUMAN_ANSWER", answer: answer.trim() });
         }
 
         case "DISMISSED":
@@ -339,13 +366,6 @@ export function createResolvedQueryWaiter({
               "no se reanuda el rol ni se inventa una instrucción."
           );
           return Object.freeze({ kind: "DISMISSED" });
-
-        default:
-          // ANSWERED / CLOSED / unknown — not a RailSoft `RailQueryStatus`.
-          throw queryContractError(
-            `estado de query desconocido '${status}' para ${queryId} ` +
-              "(RailSoft sólo define PENDING / RESOLVED / DISMISSED)"
-          );
       }
     }
   };

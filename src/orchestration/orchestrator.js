@@ -101,6 +101,14 @@ class OrchestrationStop {
  * @param {(ms:number)=>Promise} [p.sleep]  injectable timer for the waiter (tests).
  * @param {number}  [p.maxReworks]       Reviewer/Tester REWORK budget (default 1).
  * @param {number}  [p.maxQueryResumes]  governed BLOCKED->resume budget (default 1).
+ *                                       MUST be an integer >= 0. Explicit
+ *                                       semantics for `0`: Agent-Query-driven
+ *                                       resume is DISABLED — a role that returns
+ *                                       BLOCKED is fail-closed (outcome `BLOCKED`
+ *                                       → Run `FAILED`) and **no Agent Query is
+ *                                       created** (an unwaitable query would be
+ *                                       an orphan). `1` (default) allows exactly
+ *                                       one governed human resume.
  * @param {string}  [p.targetState]      final WorkCycle state (default SANDBOX_READY).
  * @param {string[]}[p.humanOnlyStates]  states the Harness must hand off, not enter.
  * @param {() => string} [p.newSessionId]
@@ -124,6 +132,15 @@ export function createOrchestrator({
   if (!api) throw new Error("createOrchestrator requiere un cliente Rail (api)");
   if (typeof runRole !== "function") {
     throw new Error("createOrchestrator requiere runRole({ role, envelope, signal })");
+  }
+  if (!Number.isInteger(maxQueryResumes) || maxQueryResumes < 0) {
+    throw new Error(
+      "maxQueryResumes debe ser un entero >= 0 (0 = Agent Queries deshabilitadas, " +
+        "BLOCKED falla cerrado sin crear query)"
+    );
+  }
+  if (!Number.isInteger(maxReworks) || maxReworks < 0) {
+    throw new Error("maxReworks debe ser un entero >= 0");
   }
 
   const log = msg => {
@@ -153,7 +170,7 @@ export function createOrchestrator({
     }
   }
 
-  async function execute({ ref, runId, ticket, branch, workspacePath, startState }) {
+  async function execute({ ref, runId, ticket, branch, workspacePath, startState, recovery = null }) {
     if (!ref || !runId || !branch || !workspacePath) {
       throw new Error(
         "execute requiere { ref, runId, branch, workspacePath } (el Run ya lo posee el Worker Core)"
@@ -168,11 +185,14 @@ export function createOrchestrator({
     // and leaves `execute()` pending while the query stays open. Built LAZILY —
     // only when a role actually returns BLOCKED.
     //
-    // Normalized result shape (RailSoft semantics):
-    //   { kind: "ANSWERED", answer }  — a real, non-empty human answer (RESOLVED)
-    //   { kind: "DISMISSED" }         — discarded WITHOUT an answer (DISMISSED)
-    //   { kind: "NO_ANSWER" }         — no governed answer available (injected
-    //                                   resolver said so / gave up)
+    // Normalized result shape (RailSoft semantics). `HUMAN_ANSWER` is an
+    // internal Harness `kind`, deliberately NOT `"ANSWERED"` — `ANSWERED` is an
+    // *invalid* RailSoft query status and the two must never be confused
+    // (RailSoft statuses stay PENDING / RESOLVED / DISMISSED, untouched).
+    //   { kind: "HUMAN_ANSWER", answer } — a real, non-empty human answer (RESOLVED)
+    //   { kind: "DISMISSED" }            — discarded WITHOUT an answer (DISMISSED)
+    //   { kind: "NO_ANSWER" }            — no governed answer available (injected
+    //                                      resolver said so / gave up)
     // A contract violation (RESOLVED w/o text, unknown status, missing queryId)
     // is thrown as `ORCH_QUERY_CONTRACT_VIOLATION` — never a synthetic answer.
     let queryWaiter = null;
@@ -180,9 +200,13 @@ export function createOrchestrator({
       if (typeof resolveQuery === "function") {
         const raw = await resolveQuery(payload);
         if (typeof raw === "string" && raw.trim() !== "") {
-          return { kind: "ANSWERED", answer: raw.trim() };
+          return { kind: "HUMAN_ANSWER", answer: raw.trim() };
         }
-        if (raw && typeof raw === "object" && typeof raw.kind === "string") return raw;
+        if (raw && typeof raw === "object" && typeof raw.kind === "string") {
+          // Back-compat: an injected resolver may still say "ANSWERED".
+          if (raw.kind === "ANSWERED") return { kind: "HUMAN_ANSWER", answer: raw.answer };
+          return raw;
+        }
         return { kind: "NO_ANSWER" };
       }
       if (!queryWaiter) {
@@ -280,10 +304,13 @@ export function createOrchestrator({
         if (attempt >= maxQueryResumes) {
           stop(
             "BLOCKED",
-            `El rol ${role} sigue BLOCKED y no queda presupuesto de resume ` +
-              `(maxQueryResumes=${maxQueryResumes}). NO se crea otra Agent Query — dejarla ` +
-              "pendiente sin poder esperarla sería una query huérfana. Se detiene el avance " +
-              "sin inventar una resolución."
+            (maxQueryResumes === 0
+              ? `El rol ${role} devolvió BLOCKED y las Agent Queries están deshabilitadas ` +
+                `(maxQueryResumes=0). `
+              : `El rol ${role} sigue BLOCKED y no queda presupuesto de resume ` +
+                `(maxQueryResumes=${maxQueryResumes}). `) +
+              "NO se crea otra Agent Query — dejarla pendiente sin poder esperarla sería una " +
+              "query huérfana. Se detiene el avance sin inventar una resolución."
           );
         }
 
@@ -372,7 +399,7 @@ export function createOrchestrator({
 
         if (
           !waited ||
-          waited.kind !== "ANSWERED" ||
+          waited.kind !== "HUMAN_ANSWER" ||
           typeof waited.answer !== "string" ||
           waited.answer.trim() === ""
         ) {
@@ -643,45 +670,121 @@ export function createOrchestrator({
         cycle = "IN_PROGRESS";
       }
 
-      if (cycle !== "IN_PROGRESS") {
+      // STATE-AWARE ENTRY (RAIL-D-00006 `/resume`). A resumed cycle continues
+      // from the EXACT state Rail preserved — the orchestrator never rewinds it
+      // and never re-runs (or re-publishes) a stage Rail already accepted:
+      //   IN_PROGRESS → run IMPLEMENTER, then REVIEWER, then TESTER
+      //   REVIEWING   → run REVIEWER, then TESTER  (NO IMPLEMENTER, NO IMPLEMENTATION check)
+      //   TESTING     → run TESTER only            (NO IMPLEMENTER/REVIEWER, NO IMPLEMENTATION/CODE_REVIEW check)
+      //   <targetState> → nothing to execute (already at the frontier)
+      const cycleEntry = cycle;
+      const ENTRY_STATES = new Set(["IN_PROGRESS", "REVIEWING", "TESTING", targetState]);
+      if (!ENTRY_STATES.has(cycle)) {
         return finish(
           "RELEASED",
           `Estado de ciclo inesperado para orquestar (${cycle}). No se ejecuta ningún rol; ` +
             "Rail es autoritativo sobre el estado."
         );
       }
+      if (cycle === targetState) {
+        if (humanOnlyStates.includes(cycle)) {
+          await fx.governedNote(
+            `Ejecución reanudada con el ciclo ya en ${cycle} (frontera humanOnly). El Harness hace ` +
+              "hand-off y NO fabrica ninguna aprobación; la evidencia previa del ciclo queda para la persona."
+          );
+          record({ kind: "handoff", from: cycle, to: cycle, humanOnly: true, resumed: true });
+          return finish(
+            "HANDOFF",
+            `Reanudado en ${cycle}: es una frontera humanOnly. Hand-off seguro; ninguna aprobación fabricada.`
+          );
+        }
+        return finish(
+          "COMPLETED",
+          `Ejecución reanudada con el ciclo ya en ${targetState}: no hay pasos automáticos pendientes. ` +
+            "No se re-ejecuta ni se re-publica nada; Rail es autoritativo."
+        );
+      }
 
-      // Phase 1 — IMPLEMENTER (fresh session) ───────────────────────────────
-      const implSessionId = newSessionId();
-      let lastImpl = await runRoleGoverned({
-        role: ROLES.IMPLEMENTER,
-        kind: "IMPLEMENT",
-        sessionId: implSessionId
+      // `lastImpl` is only populated when THIS execution ran the IMPLEMENTER.
+      // On a pure `/resume` into REVIEWING / TESTING it stays null and the
+      // REVIEWER / TESTER get a factual "resumed, do not re-implement" brief.
+      let lastImpl = null;
+      let implSessionId = null;
+
+      const resumeBrief = () => ({
+        implementationSummary:
+          `Ejecución reanudada (RESUME) en ${cycleEntry}: los pasos previos ya aceptados por Rail ` +
+          `para este HEAD (IMPLEMENTATION${cycleEntry === "TESTING" ? " + CODE_REVIEW" : ""}) NO se ` +
+          "re-ejecutan ni se re-publican. Revisá el estado real del worktree y los checks del ciclo y " +
+          "continuá desde acá; no re-implementes ni inventes aprobaciones.",
+        changedFiles: []
       });
-      if (lastImpl.decision === "RELEASE") {
-        return finish("RELEASED", `El IMPLEMENTER devolvió RELEASE: ${lastImpl.summary}`);
+      const reviewerBrief = () =>
+        lastImpl
+          ? {
+              implementationSummary: lastImpl.summary,
+              changedFiles: [...lastImpl.evidence.filesChanged]
+            }
+          : resumeBrief();
+      const testerBrief = () => ({ ...reviewerBrief(), acceptanceCriteria: acListFromTicket() });
+      const changedFilesForRework = () => (lastImpl ? [...lastImpl.evidence.filesChanged] : []);
+
+      // Phase 1 — IMPLEMENTER — ONLY when entering at IN_PROGRESS ────────────
+      // In a `/resume` or `/recover` continuation the worktree already holds
+      // prior work: the first IMPLEMENTER runs as a `RECOVERY` continuation (do
+      // NOT start from scratch), NOT a cold `IMPLEMENT`. This is a RUN
+      // recovery — NOT an adapter-session resume — and never fabricates a human
+      // answer or a prior approval.
+      if (cycle === "IN_PROGRESS") {
+        implSessionId = newSessionId();
+        const implKind = recovery ? "RECOVERY" : "IMPLEMENT";
+        const implContinuation = recovery
+          ? {
+              priorImplementationNote:
+                `Continuación de un ciclo IN_PROGRESS reanudado ` +
+                `(recoveryOfRunId=${recovery.fromRunId ?? "?"}, target=${recovery.target ?? "?"}). ` +
+                "Ya existe trabajo previo sin commitear en el worktree: revisá git status / git diff " +
+                "primero y continuá; NO empieces de cero y NO descartes el trabajo existente.",
+              changedFiles: []
+            }
+          : null;
+        lastImpl = await runRoleGoverned({
+          role: ROLES.IMPLEMENTER,
+          kind: implKind,
+          sessionId: implSessionId,
+          continuation: implContinuation
+        });
+        if (lastImpl.decision === "RELEASE") {
+          return finish("RELEASED", `El IMPLEMENTER devolvió RELEASE: ${lastImpl.summary}`);
+        }
+        if (lastImpl.decision === "FAILED") {
+          return finish("FAILED", `El IMPLEMENTER falló: ${lastImpl.summary}`);
+        }
+        // decision === PASS
+        await publishThenTransition({
+          checks: [
+            {
+              type: "IMPLEMENTATION",
+              evidence: {
+                summary: lastImpl.summary,
+                filesChanged: [...lastImpl.evidence.filesChanged]
+              },
+              note: "Implementación producida por el IMPLEMENTER."
+            }
+          ],
+          from: "IN_PROGRESS",
+          to: "REVIEWING",
+          role: ROLES.IMPLEMENTER
+        });
+        // `publishThenTransition` set `cycle = "REVIEWING"`.
       }
-      if (lastImpl.decision === "FAILED") {
-        return finish("FAILED", `El IMPLEMENTER falló: ${lastImpl.summary}`);
-      }
-      // decision === PASS
-      await publishThenTransition({
-        checks: [
-          {
-            type: "IMPLEMENTATION",
-            evidence: {
-              summary: lastImpl.summary,
-              filesChanged: [...lastImpl.evidence.filesChanged]
-            },
-            note: "Implementación producida por el IMPLEMENTER."
-          }
-        ],
-        from: "IN_PROGRESS",
-        to: "REVIEWING",
-        role: ROLES.IMPLEMENTER
-      });
 
       let reworks = 0;
+      // Enter the REVIEWER/TESTER loop at the TESTER when the cycle was resumed
+      // straight into TESTING (Rail already accepted CODE_REVIEW for this HEAD).
+      // Every LATER iteration (after a rework) always runs the REVIEWER first —
+      // a code change can never skip a fresh independent review.
+      let enterAtTester = cycle === "TESTING";
 
       // Phases 2 + 3 — one governed loop: REVIEWER (REVIEWING) then TESTER
       // (TESTING). A REWORK from either role goes through a GOVERNED REWIND to
@@ -694,64 +797,67 @@ export function createOrchestrator({
         guardCancelled();
 
         // ── REVIEWER (independent, fresh session). cycle === "REVIEWING". ──
-        const reviewSessionId = newSessionId();
-        const review = await runRoleGoverned({
-          role: ROLES.REVIEWER,
-          kind: "IMPLEMENT",
-          sessionId: reviewSessionId,
-          audienceRole: "REVIEWER",
-          roleBrief: {
-            implementationSummary: lastImpl.summary,
-            changedFiles: [...lastImpl.evidence.filesChanged]
-          }
-        });
-
-        if (review.decision === "FAILED") {
-          return finish("FAILED", `El REVIEWER falló técnicamente: ${review.summary}`);
-        }
-        if (review.decision === "RELEASE") {
-          return finish("RELEASED", `El REVIEWER indicó RELEASE: ${review.summary}`);
-        }
-        if (review.decision === "REWORK") {
-          reworks += 1;
-          record({ kind: "rework", source: "REVIEWER", n: reworks });
-          if (reworks > maxReworks) {
-            return finish(
-              "FAILED",
-              `Code Review no aprobado tras ${maxReworks} rework(s). NO se crea CODE_REVIEW PASS ` +
-                "y NO se avanza a TESTING."
-            );
-          }
-          // Governed rewind REVIEWING → IN_PROGRESS BEFORE re-running the
-          // IMPLEMENTER. A Rail rejection stops here (FAILED / HANDOFF): no
-          // IMPLEMENTER, no IMPLEMENTATION PASS, no invented state.
-          await governedRewind({ from: "REVIEWING", source: "REVIEWER" });
-          lastImpl = await reworkImplementerThenBackToReview({
-            implSessionId,
-            feedbackResult: review,
-            changedFiles: lastImpl.evidence.filesChanged,
-            reworkN: reworks
+        // Skipped on the FIRST iteration only when the cycle was resumed
+        // straight into TESTING (Rail already accepted CODE_REVIEW).
+        if (!enterAtTester) {
+          const reviewSessionId = newSessionId();
+          const review = await runRoleGoverned({
+            role: ROLES.REVIEWER,
+            kind: "IMPLEMENT",
+            sessionId: reviewSessionId,
+            audienceRole: "REVIEWER",
+            roleBrief: reviewerBrief()
           });
-          continue; // fresh independent REVIEWER
-        }
 
-        // REVIEWER PASS — CODE_REVIEW (evidence) then REVIEWING → TESTING.
-        await publishThenTransition({
-          checks: [
-            {
-              type: "CODE_REVIEW",
-              evidence: {
-                summary: review.summary,
-                reviewerDecision: "PASS",
-                tests: [...review.evidence.tests]
-              },
-              note: "Revisión independiente aprobada por el REVIEWER."
+          if (review.decision === "FAILED") {
+            return finish("FAILED", `El REVIEWER falló técnicamente: ${review.summary}`);
+          }
+          if (review.decision === "RELEASE") {
+            return finish("RELEASED", `El REVIEWER indicó RELEASE: ${review.summary}`);
+          }
+          if (review.decision === "REWORK") {
+            reworks += 1;
+            record({ kind: "rework", source: "REVIEWER", n: reworks });
+            if (reworks > maxReworks) {
+              return finish(
+                "FAILED",
+                `Code Review no aprobado tras ${maxReworks} rework(s). NO se crea CODE_REVIEW PASS ` +
+                  "y NO se avanza a TESTING."
+              );
             }
-          ],
-          from: "REVIEWING",
-          to: "TESTING",
-          role: ROLES.REVIEWER
-        });
+            // Governed rewind REVIEWING → IN_PROGRESS BEFORE re-running the
+            // IMPLEMENTER. A Rail rejection stops here (FAILED / HANDOFF): no
+            // IMPLEMENTER, no IMPLEMENTATION PASS, no invented state.
+            await governedRewind({ from: "REVIEWING", source: "REVIEWER" });
+            implSessionId = implSessionId || newSessionId();
+            lastImpl = await reworkImplementerThenBackToReview({
+              implSessionId,
+              feedbackResult: review,
+              changedFiles: changedFilesForRework(),
+              reworkN: reworks
+            });
+            continue; // fresh independent REVIEWER
+          }
+
+          // REVIEWER PASS — CODE_REVIEW (evidence) then REVIEWING → TESTING.
+          await publishThenTransition({
+            checks: [
+              {
+                type: "CODE_REVIEW",
+                evidence: {
+                  summary: review.summary,
+                  reviewerDecision: "PASS",
+                  tests: [...review.evidence.tests]
+                },
+                note: "Revisión independiente aprobada por el REVIEWER."
+              }
+            ],
+            from: "REVIEWING",
+            to: "TESTING",
+            role: ROLES.REVIEWER
+          });
+        }
+        enterAtTester = false; // every later iteration runs the REVIEWER first
 
         // ── TESTER (independent, fresh session; != REVIEWER). cycle === "TESTING". ──
         guardCancelled();
@@ -761,11 +867,7 @@ export function createOrchestrator({
           kind: "IMPLEMENT",
           sessionId: testSessionId,
           audienceRole: "TESTER",
-          roleBrief: {
-            implementationSummary: lastImpl.summary,
-            changedFiles: [...lastImpl.evidence.filesChanged],
-            acceptanceCriteria: acListFromTicket()
-          }
+          roleBrief: testerBrief()
         });
 
         if (test.decision === "FAILED") {
@@ -788,10 +890,11 @@ export function createOrchestrator({
           // new IMPLEMENTATION PASS, IN_PROGRESS → REVIEWING, then re-enter the
           // loop: a fresh REVIEWER runs before the TESTER is retried.
           await governedRewind({ from: "TESTING", source: "TESTER" });
+          implSessionId = implSessionId || newSessionId();
           lastImpl = await reworkImplementerThenBackToReview({
             implSessionId,
             feedbackResult: test,
-            changedFiles: lastImpl.evidence.filesChanged,
+            changedFiles: changedFilesForRework(),
             reworkN: reworks
           });
           continue; // mandatory re-review before the TESTER
@@ -825,9 +928,13 @@ export function createOrchestrator({
 
       return finish(
         "COMPLETED",
-        `Orquestación completa. IMPLEMENTATION / CODE_REVIEW / AUTOMATED_TESTS / ` +
-          `ACCEPTANCE_CRITERIA registrados con evidencia; ciclo llevado a ${targetState} ` +
-          "mediante transiciones gobernadas de Rail."
+        cycleEntry === "IN_PROGRESS"
+          ? `Orquestación completa. IMPLEMENTATION / CODE_REVIEW / AUTOMATED_TESTS / ` +
+              `ACCEPTANCE_CRITERIA registrados con evidencia; ciclo llevado a ${targetState} ` +
+              "mediante transiciones gobernadas de Rail."
+          : `Orquestación reanudada desde ${cycleEntry} y completada hasta ${targetState}. Sólo se ` +
+              "ejecutaron y publicaron los pasos aún NO aceptados por Rail para este HEAD; los previos " +
+              "no se re-ejecutaron ni se re-publicaron."
       );
     } catch (err) {
       if (err instanceof OrchestrationStop) return finish(err.outcome, err.note);
@@ -1009,7 +1116,10 @@ export function createOrchestrationExecution(ctx, deps = {}) {
       ticket: ctx.ticket ?? {},
       branch: ctx.branch,
       workspacePath: workspace.path,
-      startState
+      startState,
+      // A recovered execution carries `ctx.recovery` (RAIL-D-00006): the first
+      // IMPLEMENTER continues the cycle instead of starting cold.
+      recovery: ctx.recovery ?? null
     });
 
     log(

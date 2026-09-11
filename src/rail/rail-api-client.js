@@ -187,10 +187,38 @@ export class RailApiClient {
   }
 
   /**
-   * Governed recover/reclaim of an orphaned IN_PROGRESS cycle. See
-   * docs/STATE_MACHINE.md. If Rail has not deployed the endpoint the server
-   * answers 404/405/501 and the caller must abort without any improvised
-   * mutation. The response is normalized like `claim()`.
+   * Governed GENERAL continuation of ownership on a NON-terminal cycle
+   * (`POST /tickets/:ref/resume`). RailSoft's `/resume`:
+   *   - preserves `WorkCycle.state` EXACTLY (`REVIEWING → REVIEWING`, …);
+   *   - applies to any non-terminal state except `BLOCKED`;
+   *   - stale takeover: `activeRun` `ACTIVE` with `leaseExpiresAt <= now`,
+   *     `lastRunId == activeRun.id`;
+   *   - ownerless resume: `activeRun == null`, `lastRunId ==` the last Run of the
+   *     SAME cycle whose `state != ACTIVE` (`COMPLETED` / `RELEASED` / `FAILED` /
+   *     `ABANDONED` are ALL valid — the old Run stays terminal and untouched).
+   * Creates a NEW `ACTIVE` Run with `recoveryOfRunId = <old Run>`; the cycle
+   * state does NOT change. If the endpoint is absent the server answers
+   * 404/405/501 and the caller must abort with NO improvised mutation. The
+   * response is normalized exactly like `claim()` / `recover()`.
+   */
+  async resume(ref, { branch, worktreePath, lastRunId, reason } = {}) {
+    const data = await this.request(`/tickets/${encodeURIComponent(ref)}/resume`, {
+      method: "POST",
+      body: { branch, worktreePath, lastRunId, reason }
+    });
+    return normalizeRunHandoff(data);
+  }
+
+  /**
+   * Governed recover/reclaim of an orphaned IN_PROGRESS cycle
+   * (`POST /tickets/:ref/recover`) — COMPATIBILITY path only: `state ==
+   * IN_PROGRESS`, `activeRun == null`, last Run `FAILED` / `ABANDONED` (RailSoft
+   * also allows an `IN_PROGRESS` stale takeover here). It does NOT replace the
+   * general `/resume` semantics (`resume()` above) that RAIL-D-00006's AC
+   * require. See docs/STATE_MACHINE.md / docs/RECOVERY.md. If Rail has not
+   * deployed the endpoint the server answers 404/405/501 and the caller must
+   * abort without any improvised mutation. The response is normalized like
+   * `claim()`.
    */
   async recover(ref, { branch, worktreePath, lastRunId, reason } = {}) {
     const data = await this.request(`/tickets/${encodeURIComponent(ref)}/recover`, {

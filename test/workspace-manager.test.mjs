@@ -17,6 +17,7 @@ import {
   prepareWorkspace,
   cleanupWorkspace,
   createWorkspaceExecution,
+  inspectWorktree,
   workspacePathFor,
   workspaceSlug,
   assertInsideRoot,
@@ -741,4 +742,55 @@ test("Worker Core + createWorkspaceExecution: ninguna mutación antes del claim;
     assert.equal(api.calls.finishRun[0].payload.outcome, "RELEASED");
     for (const l of logs) assert.ok(!String(l).includes("CT-x-secret-1"), "el claimToken no se loguea");
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// inspectWorktree — RAIL-D-00006: READ-ONLY, dirty is reported not rejected.
+// ─────────────────────────────────────────────────────────────────────────
+
+test("inspectWorktree: reports a real, registered, dirty worktree without mutating it", t => {
+  const { primary, root } = sandbox(t);
+  const branch = "rail/rail-d-00006";
+  return prepareWorkspace({
+    ticket: ticketDetail("RAIL-D-00006"),
+    branch,
+    workspaceRoot: root,
+    repoPath: primary
+  }).then(ws => {
+    // make it dirty — recovery expects this
+    fs.writeFileSync(path.join(ws.path, "WIP.txt"), "trabajo sin commitear\n");
+
+    const info = inspectWorktree({ workspaceRoot: root, repoPath: primary, dirKey: "RAIL-D-00006" });
+    assert.equal(info.path, ws.path);
+    assert.equal(info.exists, true);
+    assert.equal(info.isWorktree, true);
+    assert.equal(info.isRoot, true);
+    assert.equal(info.registered, true);
+    assert.equal(info.branch, branch);
+    assert.equal(info.dirty, true);
+    assert.equal(info.originSlug, "pachimanok/railharness");
+
+    // still dirty afterwards: inspection never ran reset/clean/checkout
+    assert.ok(fs.existsSync(path.join(ws.path, "WIP.txt")));
+    assert.equal(git(ws.path, ["status", "--porcelain"]).length > 0, true);
+  });
+});
+
+test("inspectWorktree: a missing directory => { exists:false } (recovery then fails closed)", t => {
+  const { primary, root } = sandbox(t);
+  const info = inspectWorktree({ workspaceRoot: root, repoPath: primary, dirKey: "RAIL-D-99999" });
+  assert.equal(info.exists, false);
+  assert.equal(info.isWorktree, false);
+  assert.equal(info.registered, false);
+});
+
+test("inspectWorktree: a non-worktree directory in the path => reported, not touched", t => {
+  const { primary, root } = sandbox(t);
+  const p = workspacePathFor(root, "RAIL-D-00006");
+  fs.mkdirSync(p, { recursive: true });
+  fs.writeFileSync(path.join(p, "keep.txt"), "ajeno\n");
+  const info = inspectWorktree({ workspaceRoot: root, repoPath: primary, dirKey: "RAIL-D-00006" });
+  assert.equal(info.exists, true);
+  assert.equal(info.isWorktree, false);
+  assert.ok(fs.existsSync(path.join(p, "keep.txt")), "no se borra nada");
 });

@@ -103,6 +103,91 @@ test("request() attaches auth + rail headers and normalizes claim(); token is no
   }
 });
 
+test("resume() POSTs /resume with { branch, worktreePath, lastRunId, reason } and reuses normalizeRunHandoff", async () => {
+  const seen = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    seen.push({ url, opts });
+    return {
+      ok: true,
+      status: 200,
+      async text() {
+        // RailSoft /resume preserves the cycle state exactly (e.g. REVIEWING).
+        return JSON.stringify({
+          activeRun: { id: "run-new", state: "ACTIVE", claimToken: "ct-new", leaseExpiresAt: "L" },
+          recoveryOfRunId: "run-old-completed",
+          cycle: { state: "REVIEWING" }
+        });
+      }
+    };
+  };
+  try {
+    const client = new RailApiClient({ baseUrl: "https://rail.example/api/rail", token: "t", agent: "a", machine: "m" });
+    const handoff = await client.resume("ABC-1", {
+      branch: "rail/abc-1",
+      worktreePath: "/ws/abc-1",
+      lastRunId: "run-old-completed",
+      reason: "resume general"
+    });
+    assert.equal(seen[0].url, "https://rail.example/api/rail/tickets/ABC-1/resume");
+    assert.equal(seen[0].opts.method, "POST");
+    assert.deepEqual(JSON.parse(seen[0].opts.body), {
+      branch: "rail/abc-1",
+      worktreePath: "/ws/abc-1",
+      lastRunId: "run-old-completed",
+      reason: "resume general"
+    });
+    assert.equal(handoff.run.id, "run-new");
+    assert.equal(handoff.run.claimToken, "ct-new");
+    assert.equal(handoff.recovered.fromRunId, "run-old-completed");
+    assert.equal(handoff.recovered.cycleState, "REVIEWING", "el estado del ciclo se preserva");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("recover() POSTs { branch, worktreePath, lastRunId, reason } and normalizes the /recover shape", async () => {
+  const seen = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    seen.push({ url, opts });
+    return {
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({
+          activeRun: { id: "run-new", state: "ACTIVE", claimToken: "ct-new", leaseExpiresAt: "L" },
+          recoveryOfRunId: "run-old",
+          cycle: { state: "IN_PROGRESS" }
+        });
+      }
+    };
+  };
+  try {
+    const client = new RailApiClient({ baseUrl: "https://rail.example/api/rail", token: "t", agent: "a", machine: "m" });
+    const handoff = await client.recover("ABC-1", {
+      branch: "rail/abc-1",
+      worktreePath: "/ws/abc-1",
+      lastRunId: "run-old",
+      reason: "recover gobernado"
+    });
+    assert.equal(seen[0].url, "https://rail.example/api/rail/tickets/ABC-1/recover");
+    assert.equal(seen[0].opts.method, "POST");
+    assert.deepEqual(JSON.parse(seen[0].opts.body), {
+      branch: "rail/abc-1",
+      worktreePath: "/ws/abc-1",
+      lastRunId: "run-old",
+      reason: "recover gobernado"
+    });
+    assert.equal(handoff.run.id, "run-new");
+    assert.equal(handoff.run.claimToken, "ct-new");
+    assert.equal(handoff.recovered.fromRunId, "run-old");
+    assert.equal(handoff.recovered.cycleState, "IN_PROGRESS");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("request() throws a structured error on non-2xx", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({

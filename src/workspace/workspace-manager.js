@@ -594,6 +594,89 @@ export function assertWorkspaceCleanOfSecrets(wsPath, secrets = [], { maxBytes =
   walk(root);
 }
 
+// ── Read-only worktree inspection (RAIL-D-00006 recovery) ──────────────
+
+/**
+ * READ-ONLY inspection of the isolated worktree a recovery would reuse. Runs
+ * ONLY non-mutating git plumbing (`rev-parse`, `status --porcelain`,
+ * `worktree list`, `remote get-url`) — never `checkout` / `reset` / `clean` /
+ * `worktree add`. A dirty worktree is EXPECTED in recovery and is reported,
+ * not treated as an error.
+ *
+ * @param {object} p
+ * @param {string} p.workspaceRoot      absolute configured workspace root.
+ * @param {string} p.repoPath           absolute path to the primary clone.
+ * @param {string} p.dirKey             ticket code / branch → workspace dir slug.
+ * @param {Function} [p.runGit]         injectable git runner.
+ * @returns {{ path:string, exists:boolean, isWorktree:boolean, toplevel:string|null,
+ *             isRoot:boolean, branch:string|null, dirty:boolean|null,
+ *             originSlug:string|null, registered:boolean }}
+ */
+export function inspectWorktree({
+  workspaceRoot,
+  repoPath,
+  dirKey,
+  runGit = defaultRunGit
+} = {}) {
+  const root = requireAbsolute(workspaceRoot, "workspaceRoot");
+  const primary = requireAbsolute(repoPath, "repoPath");
+  const wsPath = workspacePathFor(root, dirKey);
+
+  const base = {
+    path: wsPath,
+    exists: false,
+    isWorktree: false,
+    toplevel: null,
+    isRoot: false,
+    branch: null,
+    dirty: null,
+    originSlug: null,
+    registered: false
+  };
+
+  if (!fs.existsSync(wsPath)) return Object.freeze(base);
+  base.exists = true;
+
+  let stat;
+  try {
+    stat = fs.statSync(wsPath);
+  } catch {
+    return Object.freeze(base);
+  }
+  if (!stat.isDirectory()) return Object.freeze(base);
+
+  base.isWorktree = isGitWorktree(runGit, wsPath);
+  if (!base.isWorktree) return Object.freeze(base);
+
+  try {
+    base.toplevel = runGit(["rev-parse", "--show-toplevel"], { cwd: wsPath });
+  } catch {
+    base.toplevel = null;
+  }
+  base.isRoot = Boolean(base.toplevel && samePath(base.toplevel, wsPath));
+
+  try {
+    base.branch = currentBranch(runGit, wsPath);
+  } catch {
+    base.branch = null;
+  }
+  try {
+    base.dirty = isDirty(runGit, wsPath);
+  } catch {
+    base.dirty = null;
+  }
+  try {
+    base.originSlug = normalizeRepoSlug(
+      runGit(["remote", "get-url", "origin"], { cwd: wsPath })
+    );
+  } catch {
+    base.originSlug = null;
+  }
+  base.registered = listWorktreePaths(runGit, primary).some(p => samePath(p, wsPath));
+
+  return Object.freeze(base);
+}
+
 // ── Worker Core integration (injectable `createExecution`) ──────────────
 
 /**

@@ -73,9 +73,31 @@ const EXPECTED_EXPORTS = [
   "isTicketClaimable",
   "pickDiscoveryRef",
   "createPlaceholderExecution",
+  // Resume / recovery (RAIL-D-00006)
+  "resolveResumeTarget",
+  "assertResumable",
+  "resolveRecoveryTarget",
+  "assertRecoverable",
+  "isActiveRunLeaseLive",
+  "pickLastRun",
+  "cycleRunIds",
+  "buildRecoverRequest",
+  "buildResumeRequest",
+  "recoveryTargetSummary",
+  "RESUME_CODES",
+  "RESUME_TARGETS",
+  "RECOVERY_CODES",
+  "RECOVERY_TARGETS",
+  "createResumeRunner",
+  "createRecoveryRunner",
+  "worktreeProblem",
+  "CONTINUATION_OPERATIONS",
+  "RECOVERY_PHASES",
+  "RECOVERY_RESULT_CODES",
   "prepareWorkspace",
   "cleanupWorkspace",
   "createWorkspaceExecution",
+  "inspectWorktree",
   "workspacePathFor",
   "assertInsideRoot",
   "normalizeRepoSlug",
@@ -101,7 +123,10 @@ const EXPECTED_EXPORTS = [
   "digestEvidence",
   "classifyTransition",
   "isHumanOnlyRejection",
-  "ORCHESTRATION_CHECK_TYPES"
+  "ORCHESTRATION_CHECK_TYPES",
+  "RAIL_QUERY_STATUSES",
+  "isKnownQueryStatus",
+  "readQueryStatus"
 ];
 
 test("src/index.js exposes the whole bootstrap surface", () => {

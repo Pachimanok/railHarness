@@ -85,9 +85,24 @@ test("RAIL_RECOVER_REF => recover mode", () => {
   assert.equal(cfg.recoverRef, "ABC-1");
 });
 
-test("RAIL_TICKET_REF + RAIL_RECOVER_REF are mutually exclusive", () => {
+test("RAIL_RESUME_REF => resume mode (general /resume continuation)", () => {
+  const cfg = loadRuntimeConfig(baseEnv({ RAIL_RESUME_REF: "ABC-1", RAIL_RESUME_NOTES: "tras caída" }));
+  assert.equal(cfg.mode, HARNESS_MODES.RESUME);
+  assert.equal(cfg.resumeRef, "ABC-1");
+  assert.equal(cfg.resumeNotes, "tras caída");
+});
+
+test("RAIL_TICKET_REF / RAIL_RECOVER_REF / RAIL_RESUME_REF are ALL mutually exclusive", () => {
   assert.throws(
     () => loadRuntimeConfig(baseEnv({ RAIL_TICKET_REF: "A-1", RAIL_RECOVER_REF: "A-1" })),
+    /mutually exclusive/
+  );
+  assert.throws(
+    () => loadRuntimeConfig(baseEnv({ RAIL_TICKET_REF: "A-1", RAIL_RESUME_REF: "A-1" })),
+    /mutually exclusive/
+  );
+  assert.throws(
+    () => loadRuntimeConfig(baseEnv({ RAIL_RECOVER_REF: "A-1", RAIL_RESUME_REF: "A-1" })),
     /mutually exclusive/
   );
 });
@@ -96,7 +111,9 @@ test("resolveMode is pure and independent", () => {
   assert.equal(resolveMode({}), HARNESS_MODES.DISCOVERY);
   assert.equal(resolveMode({ ticketRef: "x" }), HARNESS_MODES.EXPLICIT);
   assert.equal(resolveMode({ recoverRef: "x" }), HARNESS_MODES.RECOVER);
+  assert.equal(resolveMode({ resumeRef: "x" }), HARNESS_MODES.RESUME);
   assert.throws(() => resolveMode({ ticketRef: "x", recoverRef: "y" }), /mutually exclusive/);
+  assert.throws(() => resolveMode({ resumeRef: "x", recoverRef: "y" }), /mutually exclusive/);
 });
 
 test("describeConfig never leaks the token and is in Spanish", () => {

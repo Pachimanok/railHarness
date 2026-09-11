@@ -113,6 +113,33 @@ export {
 
 export { createPlaceholderExecution } from "./worker/placeholder-execution.js";
 
+// Resume / recovery of a non-terminal / orphaned cycle (RAIL-D-00006).
+export {
+  resolveResumeTarget,
+  assertResumable,
+  resolveRecoveryTarget,
+  assertRecoverable,
+  isActiveRunLeaseLive,
+  pickLastRun,
+  cycleRunIds,
+  buildRecoverRequest,
+  buildResumeRequest,
+  recoveryTargetSummary,
+  RESUME_CODES,
+  RESUME_TARGETS,
+  RECOVERY_CODES,
+  RECOVERY_TARGETS
+} from "./worker/recovery-preflight.js";
+
+export {
+  createResumeRunner,
+  createRecoveryRunner,
+  worktreeProblem,
+  CONTINUATION_OPERATIONS,
+  RECOVERY_PHASES,
+  RECOVERY_RESULT_CODES
+} from "./worker/recovery.js";
+
 export {
   createOrchestrator,
   createOrchestrationExecution,
@@ -138,13 +165,17 @@ export {
   digestEvidence,
   classifyTransition,
   isHumanOnlyRejection,
-  ORCHESTRATION_CHECK_TYPES
+  ORCHESTRATION_CHECK_TYPES,
+  RAIL_QUERY_STATUSES,
+  isKnownQueryStatus,
+  readQueryStatus
 } from "./orchestration/rail-effects.js";
 
 export {
   prepareWorkspace,
   cleanupWorkspace,
   createWorkspaceExecution,
+  inspectWorktree,
   workspacePathFor,
   assertInsideRoot,
   normalizeRepoSlug,
